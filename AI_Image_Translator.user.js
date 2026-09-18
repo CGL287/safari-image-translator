@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         AI 圖片自動翻譯 V7.3 - Google Vision
+// @name         AI 圖片自動翻譯 V7.4 - Google Vision
 // @namespace    CGL287
-// @version      7.3.0
+// @version      7.4.0
 // @description  Google Vision OCR + Google Translation 漫畫圖片自動翻譯
 // @match        *://*/*
 // @run-at       document-idle
@@ -26,6 +26,10 @@
     const IMAGE_TIMEOUT = 30000;
     const WORKER_TIMEOUT = 60000;
 
+    // 最小翻譯框尺寸
+    const MIN_OVERLAY_WIDTH = 12;
+    const MIN_OVERLAY_HEIGHT = 10;
+
     // =========================================================
     // 狀態
     // =========================================================
@@ -40,7 +44,11 @@
     const processedImages =
         new WeakMap();
 
-    const overlayRecords = [];
+    const imageLayers =
+        new WeakMap();
+
+    const resizeObservers =
+        new WeakMap();
 
     // =========================================================
     // 狀態面板
@@ -50,7 +58,7 @@
         document.createElement("div");
 
     statusPanel.id =
-        "gm-google-manga-status";
+        "gm-google-manga-status-v74";
 
     Object.assign(
         statusPanel.style,
@@ -83,21 +91,25 @@
 
             pointerEvents: "none",
 
-            minWidth: "180px"
+            minWidth: "190px"
         }
     );
 
     statusPanel.textContent =
-        "Google Manga Translator\n啟動中…";
+        "Google Manga Translator V7.4\n啟動中…";
 
     document.documentElement.appendChild(
         statusPanel
     );
 
     function updateStatus(message = "") {
+
         statusPanel.innerHTML = `
-            <div style="font-weight:700;margin-bottom:4px;">
-                Google Manga Translator
+            <div style="
+                font-weight:700;
+                margin-bottom:4px;
+            ">
+                Google Manga Translator V7.4
             </div>
 
             <div>
@@ -133,86 +145,120 @@
     }
 
     function escapeHTML(text) {
+
         return String(text)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
+            .replace(
+                /&/g,
+                "&amp;"
+            )
+            .replace(
+                /</g,
+                "&lt;"
+            )
+            .replace(
+                />/g,
+                "&gt;"
+            )
+            .replace(
+                /"/g,
+                "&quot;"
+            )
+            .replace(
+                /'/g,
+                "&#039;"
+            );
     }
 
     // =========================================================
-    // GM.xmlHttpRequest
+    // GM Request
     // =========================================================
 
     function gmRequest(details) {
-        return new Promise((resolve, reject) => {
 
-            const fn =
-                typeof GM !== "undefined" &&
-                typeof GM.xmlHttpRequest === "function"
-                    ? GM.xmlHttpRequest
-                    : (
-                        typeof GM_xmlhttpRequest === "function"
-                            ? GM_xmlhttpRequest
-                            : null
+        return new Promise(
+            (resolve, reject) => {
+
+                const fn =
+                    typeof GM !== "undefined" &&
+                    typeof GM.xmlHttpRequest ===
+                        "function"
+
+                        ? GM.xmlHttpRequest
+
+                        : (
+                            typeof GM_xmlhttpRequest ===
+                                "function"
+
+                                ? GM_xmlhttpRequest
+
+                                : null
+                        );
+
+                if (!fn) {
+
+                    reject(
+                        new Error(
+                            "GM.xmlHttpRequest unavailable"
+                        )
                     );
 
-            if (!fn) {
-                reject(
-                    new Error(
-                        "GM.xmlHttpRequest unavailable"
-                    )
-                );
-                return;
+                    return;
+                }
+
+                fn({
+                    ...details,
+
+                    onload: resolve,
+
+                    onerror: () =>
+                        reject(
+                            new Error(
+                                "GM.xmlHttpRequest error"
+                            )
+                        ),
+
+                    ontimeout: () =>
+                        reject(
+                            new Error(
+                                "GM.xmlHttpRequest timeout"
+                            )
+                        ),
+
+                    onabort: () =>
+                        reject(
+                            new Error(
+                                "GM.xmlHttpRequest aborted"
+                            )
+                        )
+                });
             }
-
-            fn({
-                ...details,
-
-                onload: resolve,
-
-                onerror: () =>
-                    reject(
-                        new Error(
-                            "GM.xmlHttpRequest error"
-                        )
-                    ),
-
-                ontimeout: () =>
-                    reject(
-                        new Error(
-                            "GM.xmlHttpRequest timeout"
-                        )
-                    ),
-
-                onabort: () =>
-                    reject(
-                        new Error(
-                            "GM.xmlHttpRequest aborted"
-                        )
-                    )
-            });
-        });
+        );
     }
 
     // =========================================================
     // ArrayBuffer → Base64
     // =========================================================
 
-    function arrayBufferToBase64(buffer) {
+    function arrayBufferToBase64(
+        buffer
+    ) {
+
         let binary = "";
 
         const bytes =
-            new Uint8Array(buffer);
+            new Uint8Array(
+                buffer
+            );
 
-        const chunkSize = 0x8000;
+        const chunkSize =
+            0x8000;
 
         for (
             let i = 0;
             i < bytes.length;
             i += chunkSize
         ) {
+
             const chunk =
                 bytes.subarray(
                     i,
@@ -235,32 +281,43 @@
     // 取得圖片
     // =========================================================
 
-    async function downloadImage(img) {
+    async function downloadImage(
+        img
+    ) {
 
         const src =
             img.currentSrc ||
             img.src;
 
         if (!src) {
+
             throw new Error(
                 "Image source unavailable"
             );
         }
 
-        updateStatus("取得圖片");
+        updateStatus(
+            "取得圖片"
+        );
 
         const response =
             await gmRequest({
                 method: "GET",
+
                 url: src,
-                responseType: "arraybuffer",
-                timeout: IMAGE_TIMEOUT
+
+                responseType:
+                    "arraybuffer",
+
+                timeout:
+                    IMAGE_TIMEOUT
             });
 
         if (
             response.status &&
             response.status >= 400
         ) {
+
             throw new Error(
                 "Image HTTP " +
                 response.status
@@ -268,6 +325,7 @@
         }
 
         if (!response.response) {
+
             throw new Error(
                 "Empty image response"
             );
@@ -279,17 +337,20 @@
     }
 
     // =========================================================
-    // 呼叫 Cloudflare Worker
+    // 呼叫 Worker
     // =========================================================
 
     async function translateImage(
         base64
     ) {
 
-        updateStatus("送往 Worker");
+        updateStatus(
+            "送往 Worker"
+        );
 
         const response =
             await gmRequest({
+
                 method: "POST",
 
                 url: WORKER_URL,
@@ -299,19 +360,24 @@
                         "application/json"
                 },
 
-                data: JSON.stringify({
-                    imageBase64: base64
-                }),
+                data:
+                    JSON.stringify({
+                        imageBase64:
+                            base64
+                    }),
 
-                responseType: "text",
+                responseType:
+                    "text",
 
-                timeout: WORKER_TIMEOUT
+                timeout:
+                    WORKER_TIMEOUT
             });
 
         if (
             response.status &&
             response.status >= 400
         ) {
+
             throw new Error(
                 "Worker HTTP " +
                 response.status +
@@ -323,17 +389,21 @@
         let result;
 
         try {
+
             result =
                 JSON.parse(
                     response.responseText
                 );
+
         } catch {
+
             throw new Error(
                 "Worker returned invalid JSON"
             );
         }
 
         if (result.error) {
+
             throw new Error(
                 result.error +
                 (
@@ -351,43 +421,232 @@
     }
 
     // =========================================================
-    // 清除某張圖片原本的 Overlay
+    // 判斷圖片
     // =========================================================
 
-    function removeImageOverlays(img) {
+    function isCandidateImage(
+        img
+    ) {
 
-        for (
-            let i =
-                overlayRecords.length - 1;
-            i >= 0;
-            i--
-        ) {
-            const record =
-                overlayRecords[i];
-
-            if (record.img === img) {
-
-                if (
-                    record.element &&
-                    record.element.isConnected
-                ) {
-                    record.element.remove();
-                }
-
-                overlayRecords.splice(
-                    i,
-                    1
-                );
-            }
+        if (!img) {
+            return false;
         }
+
+        if (
+            img.closest(
+                "#gm-google-manga-status-v74"
+            )
+        ) {
+            return false;
+        }
+
+        const naturalWidth =
+            Number(
+                img.naturalWidth || 0
+            );
+
+        const naturalHeight =
+            Number(
+                img.naturalHeight || 0
+            );
+
+        const rect =
+            img.getBoundingClientRect();
+
+        const width =
+            naturalWidth ||
+            rect.width;
+
+        const height =
+            naturalHeight ||
+            rect.height;
+
+        if (
+            width <
+                MIN_IMAGE_WIDTH ||
+            height <
+                MIN_IMAGE_HEIGHT
+        ) {
+            return false;
+        }
+
+        const ratio =
+            width / height;
+
+        // 排除非常細長的 icon/banner
+        if (
+            ratio > 8 ||
+            ratio < 0.125
+        ) {
+            return false;
+        }
+
+        return true;
     }
 
     // =========================================================
-    // 建立翻譯 Overlay
+    // 建立圖片專屬 Overlay Layer
+    //
+    // 不修改圖片本身的 DOM 結構
+    // Layer 直接放在 document.documentElement
     // =========================================================
 
-    function createOverlay(
-        img,
+    function createImageLayer(
+        img
+    ) {
+
+        const oldLayer =
+            imageLayers.get(img);
+
+        if (
+            oldLayer &&
+            oldLayer.isConnected
+        ) {
+            return oldLayer;
+        }
+
+        const layer =
+            document.createElement(
+                "div"
+            );
+
+        layer.className =
+            "gm-translation-layer-v74";
+
+        Object.assign(
+            layer.style,
+            {
+                position: "fixed",
+
+                left: "0px",
+                top: "0px",
+
+                width: "0px",
+                height: "0px",
+
+                margin: "0",
+                padding: "0",
+
+                border: "0",
+
+                pointerEvents:
+                    "none",
+
+                overflow:
+                    "visible",
+
+                zIndex:
+                    "2147483646",
+
+                display:
+                    "block",
+
+                visibility:
+                    "visible",
+
+                opacity:
+                    "1",
+
+                transform:
+                    "none",
+
+                contain:
+                    "layout style",
+
+                isolation:
+                    "isolate"
+            }
+        );
+
+        document.documentElement.appendChild(
+            layer
+        );
+
+        imageLayers.set(
+            img,
+            layer
+        );
+
+        return layer;
+    }
+
+    // =========================================================
+    // 移除某張圖片的翻譯
+    // =========================================================
+
+    function clearImageLayer(
+        img
+    ) {
+
+        const oldLayer =
+            imageLayers.get(img);
+
+        if (
+            oldLayer &&
+            oldLayer.isConnected
+        ) {
+            oldLayer.remove();
+        }
+
+        imageLayers.delete(
+            img
+        );
+    }
+
+    // =========================================================
+    // 更新圖片 Layer 位置
+    // =========================================================
+
+    function updateImageLayer(
+        img
+    ) {
+
+        const layer =
+            imageLayers.get(img);
+
+        if (
+            !layer ||
+            !layer.isConnected
+        ) {
+            return;
+        }
+
+        const rect =
+            img.getBoundingClientRect();
+
+        if (
+            rect.width <= 0 ||
+            rect.height <= 0
+        ) {
+
+            layer.style.display =
+                "none";
+
+            return;
+        }
+
+        layer.style.display =
+            "block";
+
+        layer.style.left =
+            `${rect.left}px`;
+
+        layer.style.top =
+            `${rect.top}px`;
+
+        layer.style.width =
+            `${rect.width}px`;
+
+        layer.style.height =
+            `${rect.height}px`;
+    }
+
+    // =========================================================
+    // 設定 Overlay Layer 的 CSS
+    // =========================================================
+
+    function createTranslationBox(
+        layer,
         block,
         imageWidth,
         imageHeight
@@ -401,16 +660,24 @@
         }
 
         const x =
-            Number(block.x || 0);
+            Number(
+                block.x || 0
+            );
 
         const y =
-            Number(block.y || 0);
+            Number(
+                block.y || 0
+            );
 
         const width =
-            Number(block.width || 0);
+            Number(
+                block.width || 0
+            );
 
         const height =
-            Number(block.height || 0);
+            Number(
+                block.height || 0
+            );
 
         if (
             width <= 0 ||
@@ -420,19 +687,22 @@
         }
 
         // -----------------------------------------------------
-        // 小幅擴張，讓原文不會從邊緣漏出
+        // 使用非常小的擴張
+        //
+        // 不再像 V7.3 那樣大幅擴張，
+        // 避免遮住其他文字。
         // -----------------------------------------------------
 
         const expandX =
             Math.min(
-                width * 0.08,
-                20
+                width * 0.04,
+                8
             );
 
         const expandY =
             Math.min(
-                height * 0.15,
-                20
+                height * 0.08,
+                8
             );
 
         const boxX =
@@ -465,268 +735,415 @@
         const boxHeight =
             boxBottom - boxY;
 
+        if (
+            boxWidth <
+                MIN_OVERLAY_WIDTH ||
+            boxHeight <
+                MIN_OVERLAY_HEIGHT
+        ) {
+            return;
+        }
+
         // -----------------------------------------------------
-        // Overlay
+        // 建立翻譯框
         // -----------------------------------------------------
 
-        const overlay =
-            document.createElement("div");
+        const box =
+            document.createElement(
+                "div"
+            );
 
-        overlay.className =
-            "gm-translation-overlay-v73";
+        box.className =
+            "gm-translation-box-v74";
+
+        // 以圖片原始尺寸百分比定位
+        box.style.position =
+            "absolute";
+
+        box.style.left =
+            `${(boxX / imageWidth) * 100}%`;
+
+        box.style.top =
+            `${(boxY / imageHeight) * 100}%`;
+
+        box.style.width =
+            `${(boxWidth / imageWidth) * 100}%`;
+
+        box.style.height =
+            `${(boxHeight / imageHeight) * 100}%`;
 
         Object.assign(
-            overlay.style,
+            box.style,
             {
-                position: "fixed",
+                boxSizing:
+                    "border-box",
 
-                boxSizing: "border-box",
+                margin:
+                    "0",
 
-                overflow: "hidden",
+                pointerEvents:
+                    "none",
 
-                pointerEvents: "none",
-
-                zIndex: "2147483646",
+                overflow:
+                    "hidden",
 
                 background:
                     "rgba(255,255,255,0.97)",
 
-                color: "#000000",
+                color:
+                    "#000000",
 
-                borderRadius: "4px",
+                borderRadius:
+                    "3px",
 
                 padding:
-                    "2px 5px",
+                    "2px 4px",
 
-                display: "flex",
+                display:
+                    "flex",
 
-                alignItems: "center",
+                alignItems:
+                    "center",
 
-                justifyContent: "center",
+                justifyContent:
+                    "center",
 
-                textAlign: "center",
+                textAlign:
+                    "center",
 
                 fontFamily:
                     "\"Noto Sans TC\", " +
                     "\"PingFang TC\", " +
+                    "\"Microsoft JhengHei\", " +
                     "-apple-system, " +
                     "BlinkMacSystemFont, " +
-                    "\"Microsoft JhengHei\", " +
-                    sans-serif,
+                    "sans-serif",
 
-                fontWeight: "600",
+                fontWeight:
+                    "600",
 
-                lineHeight: "1.12",
+                lineHeight:
+                    "1.1",
 
-                whiteSpace: "pre-wrap",
+                whiteSpace:
+                    "pre-wrap",
 
-                wordBreak: "break-word",
+                wordBreak:
+                    "break-word",
 
-                overflowWrap: "break-word",
+                overflowWrap:
+                    "break-word",
 
                 textRendering:
-                    "geometricPrecision"
+                    "geometricPrecision",
+
+                transform:
+                    "none",
+
+                opacity:
+                    "1",
+
+                visibility:
+                    "visible"
             }
         );
 
-        overlay.textContent =
+        box.textContent =
             block.translation;
 
-        document.body.appendChild(
-            overlay
+        layer.appendChild(
+            box
         );
 
-        const record = {
-            img,
-            overlay,
-
-            imageWidth,
-            imageHeight,
-
-            x: boxX,
-            y: boxY,
-
-            width: boxWidth,
-            height: boxHeight
-        };
-
-        overlayRecords.push(record);
-
-        updateOverlayPosition(
-            record
-        );
-
-        fitOverlayText(
-            record
+        // 下一個 frame 再計算字體
+        requestAnimationFrame(
+            () => {
+                fitTranslationText(
+                    box
+                );
+            }
         );
     }
 
     // =========================================================
-    // Overlay 定位
+    // 自動縮放翻譯字體
     // =========================================================
 
-    function updateOverlayPosition(
-        record
+    function fitTranslationText(
+        box
     ) {
 
-        const {
-            img,
-            overlay,
-            imageWidth,
-            imageHeight,
-            x,
-            y,
-            width,
-            height
-        } = record;
-
         if (
-            !img ||
-            !overlay ||
-            !img.isConnected
+            !box ||
+            !box.isConnected
         ) {
             return;
         }
 
         const rect =
-            img.getBoundingClientRect();
+            box.getBoundingClientRect();
 
         if (
-            rect.width <= 0 ||
-            rect.height <= 0
-        ) {
-            overlay.style.display =
-                "none";
-
-            return;
-        }
-
-        overlay.style.display =
-            "flex";
-
-        const scaleX =
-            rect.width /
-            imageWidth;
-
-        const scaleY =
-            rect.height /
-            imageHeight;
-
-        const left =
-            rect.left +
-            x * scaleX;
-
-        const top =
-            rect.top +
-            y * scaleY;
-
-        const displayWidth =
-            width * scaleX;
-
-        const displayHeight =
-            height * scaleY;
-
-        overlay.style.left =
-            `${left}px`;
-
-        overlay.style.top =
-            `${top}px`;
-
-        overlay.style.width =
-            `${displayWidth}px`;
-
-        overlay.style.height =
-            `${displayHeight}px`;
-    }
-
-    // =========================================================
-    // 根據 OCR 框大小調整中文字體
-    // =========================================================
-
-    function fitOverlayText(
-        record
-    ) {
-
-        const overlay =
-            record.overlay;
-
-        const rect =
-            overlay.getBoundingClientRect();
-
-        if (
-            rect.width <= 0 ||
-            rect.height <= 0
+            rect.width <= 2 ||
+            rect.height <= 2
         ) {
             return;
         }
 
         /*
-         * 先從 OCR 框高度估算
-         * 不再使用巨大頁面座標。
+         * 根據實際顯示高度決定初始字體。
+         *
+         * 不讓中文字體超過翻譯框。
          */
 
         let fontSize =
             Math.max(
-                12,
+                10,
                 Math.min(
-                    42,
+                    36,
                     rect.height * 0.58
                 )
             );
 
-        overlay.style.fontSize =
+        box.style.fontSize =
             `${fontSize}px`;
 
-        // 最多縮小 12 次
+        box.style.lineHeight =
+            "1.1";
+
         for (
             let i = 0;
-            i < 12;
+            i < 16;
             i++
         ) {
 
+            const overflowY =
+                box.scrollHeight >
+                box.clientHeight + 2;
+
+            const overflowX =
+                box.scrollWidth >
+                box.clientWidth + 2;
+
             if (
-                overlay.scrollHeight <=
-                    overlay.clientHeight + 2 &&
-                overlay.scrollWidth <=
-                    overlay.clientWidth + 2
+                !overflowX &&
+                !overflowY
             ) {
                 break;
             }
 
-            fontSize *= 0.88;
+            fontSize *=
+                0.88;
 
-            if (fontSize < 10) {
-                fontSize = 10;
+            if (
+                fontSize < 8
+            ) {
+                fontSize = 8;
                 break;
             }
 
-            overlay.style.fontSize =
+            box.style.fontSize =
                 `${fontSize}px`;
         }
     }
 
     // =========================================================
-    // 更新所有 Overlay
+    // 建立圖片 Overlay
     // =========================================================
 
-    function updateAllOverlays() {
+    function renderTranslations(
+        img,
+        result
+    ) {
 
-        for (
-            const record of overlayRecords
-        ) {
-            updateOverlayPosition(
-                record
+        const imageWidth =
+            Number(
+                result.image_width || 0
             );
 
-            fitOverlayText(
-                record
+        const imageHeight =
+            Number(
+                result.image_height || 0
+            );
+
+        const blocks =
+            Array.isArray(
+                result.text_blocks
+            )
+                ? result.text_blocks
+                : [];
+
+        if (
+            !imageWidth ||
+            !imageHeight
+        ) {
+            return;
+        }
+
+        // 先刪除舊 layer
+        clearImageLayer(
+            img
+        );
+
+        const layer =
+            createImageLayer(
+                img
+            );
+
+        // 先更新 Layer
+        updateImageLayer(
+            img
+        );
+
+        // 建立翻譯框
+        for (
+            const block of blocks
+        ) {
+
+            if (
+                !block ||
+                !block.translation
+            ) {
+                continue;
+            }
+
+            createTranslationBox(
+                layer,
+                block,
+                imageWidth,
+                imageHeight
             );
         }
+
+        updateImageLayer(
+            img
+        );
+
+        // 下一幀再做一次
+        requestAnimationFrame(
+            () => {
+
+                updateImageLayer(
+                    img
+                );
+
+                const boxes =
+                    layer.querySelectorAll(
+                        ".gm-translation-box-v74"
+                    );
+
+                boxes.forEach(
+                    fitTranslationText
+                );
+            }
+        );
+    }
+
+    // =========================================================
+    // ResizeObserver
+    // =========================================================
+
+    function observeImage(
+        img
+    ) {
+
+        if (
+            typeof ResizeObserver ===
+            "undefined"
+        ) {
+            return;
+        }
+
+        if (
+            resizeObservers.has(img)
+        ) {
+            return;
+        }
+
+        const observer =
+            new ResizeObserver(
+                () => {
+
+                    updateImageLayer(
+                        img
+                    );
+
+                    const layer =
+                        imageLayers.get(
+                            img
+                        );
+
+                    if (!layer) {
+                        return;
+                    }
+
+                    const boxes =
+                        layer.querySelectorAll(
+                            ".gm-translation-box-v74"
+                        );
+
+                    boxes.forEach(
+                        fitTranslationText
+                    );
+                }
+            );
+
+        observer.observe(
+            img
+        );
+
+        resizeObservers.set(
+            img,
+            observer
+        );
+    }
+
+    // =========================================================
+    // 滾動 / 視窗大小改變
+    // =========================================================
+
+    let updateTimer =
+        null;
+
+    function updateAllLayers() {
+
+        if (updateTimer) {
+            return;
+        }
+
+        updateTimer =
+            requestAnimationFrame(
+                () => {
+
+                    updateTimer =
+                        null;
+
+                    const images =
+                        document.images;
+
+                    for (
+                        const img
+                        of images
+                    ) {
+
+                        if (
+                            imageLayers.has(
+                                img
+                            )
+                        ) {
+
+                            updateImageLayer(
+                                img
+                            );
+                        }
+                    }
+                }
+            );
     }
 
     window.addEventListener(
         "scroll",
-        updateAllOverlays,
+        updateAllLayers,
         {
             passive: true
         }
@@ -734,80 +1151,11 @@
 
     window.addEventListener(
         "resize",
-        updateAllOverlays,
+        updateAllLayers,
         {
             passive: true
         }
     );
-
-    // =========================================================
-    // ResizeObserver
-    // =========================================================
-
-    if (
-        typeof ResizeObserver !==
-        "undefined"
-    ) {
-
-        const resizeObserver =
-            new ResizeObserver(() => {
-                updateAllOverlays();
-            });
-
-        // 後面處理圖片時加入觀察
-        window.__gmResizeObserver =
-            resizeObserver;
-    }
-
-    // =========================================================
-    // 判斷是不是值得處理的圖片
-    // =========================================================
-
-    function isCandidateImage(img) {
-
-        if (!img) {
-            return false;
-        }
-
-        if (
-            img.closest(
-                "#gm-google-manga-status"
-            )
-        ) {
-            return false;
-        }
-
-        const rect =
-            img.getBoundingClientRect();
-
-        const width =
-            img.naturalWidth ||
-            rect.width;
-
-        const height =
-            img.naturalHeight ||
-            rect.height;
-
-        if (
-            width < MIN_IMAGE_WIDTH ||
-            height < MIN_IMAGE_HEIGHT
-        ) {
-            return false;
-        }
-
-        const ratio =
-            width / height;
-
-        // 排除非常細長的 icon / banner
-        if (
-            ratio > 8 ||
-            ratio < 0.125
-        ) {
-            return false;
-        }
-
-        return true;
-    }
 
     // =========================================================
     // 處理單張圖片
@@ -817,7 +1165,9 @@
         img
     ) {
 
-        if (!isCandidateImage(img)) {
+        if (
+            !isCandidateImage(img)
+        ) {
             return;
         }
 
@@ -829,10 +1179,12 @@
             return;
         }
 
+        // 已經處理過同一個圖片 URL
         const previous =
-            processedImages.get(img);
+            processedImages.get(
+                img
+            );
 
-        // 同一張圖片不重複處理
         if (
             previous === src
         ) {
@@ -847,13 +1199,13 @@
         processingCount++;
 
         updateStatus(
-            "取得圖片"
+            "處理圖片"
         );
 
         try {
 
             // -------------------------------------------------
-            // 1. 下載原圖
+            // 1. 下載圖片
             // -------------------------------------------------
 
             const base64 =
@@ -862,7 +1214,7 @@
                 );
 
             // -------------------------------------------------
-            // 2. Worker → Vision → Translation
+            // 2. Worker
             // -------------------------------------------------
 
             const result =
@@ -875,72 +1227,34 @@
             );
 
             // -------------------------------------------------
-            // 3. 清除舊 Overlay
+            // 3. 建立 Overlay
             // -------------------------------------------------
 
-            removeImageOverlays(
-                img
+            renderTranslations(
+                img,
+                result
             );
 
-            const imageWidth =
-                Number(
-                    result.image_width || 0
-                );
-
-            const imageHeight =
-                Number(
-                    result.image_height || 0
-                );
-
-            const blocks =
-                result.text_blocks || [];
-
             // -------------------------------------------------
-            // 4. 建立翻譯
+            // 4. 監控圖片尺寸
             // -------------------------------------------------
 
-            for (
-                const block of blocks
-            ) {
-
-                if (
-                    !block.translation
-                ) {
-                    continue;
-                }
-
-                createOverlay(
-                    img,
-                    block,
-                    imageWidth,
-                    imageHeight
-                );
-            }
-
-            // -------------------------------------------------
-            // 5. ResizeObserver
-            // -------------------------------------------------
-
-            if (
-                window.__gmResizeObserver
-            ) {
-                window.__gmResizeObserver.observe(
-                    img
-                );
-            }
+            observeImage(
+                img
+            );
 
             completedCount++;
 
         } catch (error) {
 
             console.error(
-                "[Google Manga Translator V7.3]",
+                "[Google Manga Translator V7.4]",
                 error
             );
 
             failedCount++;
 
-            // 讓下一輪可以重新嘗試
+            // 失敗允許之後重新嘗試
             processedImages.delete(
                 img
             );
@@ -958,15 +1272,12 @@
     }
 
     // =========================================================
-    // 掃描圖片
+    // 掃描全部圖片
     // =========================================================
 
     async function processAllImages() {
 
-        // -----------------------------------------------------
-        // 防止 MutationObserver / 初始掃描同時啟動
-        // -----------------------------------------------------
-
+        // 防止同時執行兩個掃描迴圈
         if (scanRunning) {
             return;
         }
@@ -991,7 +1302,7 @@
                 const img of images
             ) {
 
-                // 如果圖片尚未載入
+                // 等待圖片載入
                 if (
                     !img.complete
                 ) {
@@ -999,10 +1310,22 @@
                     await new Promise(
                         resolve => {
 
-                            const done =
-                                () => {
-                                    resolve();
-                                };
+                            let finished =
+                                false;
+
+                            function done() {
+
+                                if (
+                                    finished
+                                ) {
+                                    return;
+                                }
+
+                                finished =
+                                    true;
+
+                                resolve();
+                            }
 
                             img.addEventListener(
                                 "load",
@@ -1021,7 +1344,7 @@
                             );
 
                             setTimeout(
-                                resolve,
+                                done,
                                 5000
                             );
                         }
@@ -1029,7 +1352,9 @@
                 }
 
                 if (
-                    !isCandidateImage(img)
+                    !isCandidateImage(
+                        img
+                    )
                 ) {
                     continue;
                 }
@@ -1041,7 +1366,8 @@
 
         } finally {
 
-            scanRunning = false;
+            scanRunning =
+                false;
 
             updateStatus(
                 "掃描完成"
@@ -1053,25 +1379,31 @@
     // MutationObserver
     // =========================================================
 
-    let mutationTimer = null;
+    let mutationTimer =
+        null;
 
     const observer =
-        new MutationObserver(() => {
+        new MutationObserver(
+            () => {
 
-            clearTimeout(
-                mutationTimer
-            );
+                clearTimeout(
+                    mutationTimer
+                );
 
-            mutationTimer =
-                setTimeout(() => {
+                mutationTimer =
+                    setTimeout(
+                        () => {
 
-                    totalImages =
-                        document.images.length;
+                            totalImages =
+                                document.images.length;
 
-                    processAllImages();
+                            processAllImages();
 
-                }, 1500);
-        });
+                        },
+                        1500
+                    );
+            }
+        );
 
     observer.observe(
         document.documentElement,
@@ -1085,10 +1417,13 @@
     // 初始啟動
     // =========================================================
 
-    setTimeout(() => {
+    setTimeout(
+        () => {
 
-        processAllImages();
+            processAllImages();
 
-    }, 1500);
+        },
+        1500
+    );
 
 })();
