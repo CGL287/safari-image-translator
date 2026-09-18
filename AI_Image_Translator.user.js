@@ -1,248 +1,199 @@
 // ==UserScript==
-// @name         AI 圖片自動翻譯 V9 - OpenAI OCR + Google Translation
-// @namespace    CGL287
-// @version      9.0.0
-// @description  OpenAI Vision OCR + Google Translation manga translator
+// @name         AI 圖片自動翻譯 V9.1 - OpenAI OCR + Google Translation
+// @namespace    safari-image-translator
+// @version      9.1.0
+// @description  自動偵測漫畫圖片，使用 OpenAI Vision OCR + Google Translation 翻譯成繁體中文
 // @match        *://*/*
-// @run-at       document-idle
 // @grant        GM.xmlHttpRequest
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // ==/UserScript==
 
 (function () {
-
     "use strict";
 
+    /*
+     * =========================================================
+     * Configuration
+     * =========================================================
+     */
 
     const WORKER_URL =
         "https://safari-image-translator.cgl20050126.workers.dev";
 
-
-    const MIN_IMAGE_WIDTH = 200;
-    const MIN_IMAGE_HEIGHT = 200;
-
-    const IMAGE_TIMEOUT = 30000;
-    const WORKER_TIMEOUT = 180000;
-
-
-    /*
-     * OCR
-     */
-
     const TILE_HEIGHT = 900;
     const TILE_OVERLAP = 180;
-
-    /*
-     * OpenAI Vision 不一定需要 2×，
-     * 但保留目前 V8 的放大策略。
-     */
-
     const OCR_SCALE = 2;
 
+    const MIN_IMAGE_WIDTH = 250;
+    const MIN_IMAGE_HEIGHT = 150;
+
+    const MAX_CONCURRENT_IMAGES = 1;
+
+    const WORKER_TIMEOUT = 180000;
 
     /*
-     * 狀態
+     * =========================================================
+     * State
+     * =========================================================
      */
 
-    let scanRunning = false;
-
-    let totalImages = 0;
-    let processingCount = 0;
+    let imageList = [];
+    let processedCount = 0;
     let completedCount = 0;
     let failedCount = 0;
 
-    let ocrTiles = 0;
-    let ocrBlocks = 0;
+    let totalTiles = 0;
+    let totalOCRBlocks = 0;
 
-
-    const processedImages =
-        new WeakMap();
-
-    const imageLayers =
-        new WeakMap();
-
-    const resizeObservers =
-        new WeakMap();
-
+    let isRunning = false;
 
     /*
-     * ============================================================
-     * Status
-     * ============================================================
+     * =========================================================
+     * Status panel
+     * =========================================================
      */
 
-    const status =
-        document.createElement(
-            "div"
-        );
+    const statusPanel =
+        document.createElement("div");
 
+    statusPanel.id =
+        "gm-manga-translator-status";
 
     Object.assign(
-        status.style,
+        statusPanel.style,
         {
-
-            position:
-                "fixed",
-
-            top:
-                "10px",
-
-            left:
-                "10px",
-
-            zIndex:
-                "2147483647",
-
+            position: "fixed",
+            left: "12px",
+            top: "12px",
+            zIndex: "2147483647",
             background:
-                "rgba(20,20,20,.92)",
-
-            color:
-                "#fff",
-
-            padding:
-                "9px 12px",
-
-            borderRadius:
-                "9px",
-
-            fontSize:
-                "12px",
-
-            lineHeight:
-                "1.45",
-
+                "rgba(0,0,0,0.88)",
+            color: "#fff",
+            padding: "10px 14px",
+            borderRadius: "8px",
             fontFamily:
-                "-apple-system, BlinkMacSystemFont, sans-serif",
-
+                "Arial, sans-serif",
+            fontSize: "13px",
+            lineHeight: "1.6",
+            boxShadow:
+                "0 3px 14px rgba(0,0,0,0.4)",
             pointerEvents:
                 "none",
-
-            minWidth:
-                "200px"
+            minWidth: "190px"
         }
     );
 
+    statusPanel.textContent =
+        "OpenAI OCR + Google Translation V9.1";
 
-    document.documentElement
-        .appendChild(
-            status
-        );
+    document.documentElement.appendChild(
+        statusPanel
+    );
 
 
     function updateStatus(
-        message = ""
+        stage = ""
     ) {
+        statusPanel.innerHTML = `
+            <div>
+                <b>
+                    OpenAI OCR + Google Translation V9.1
+                </b>
+            </div>
 
-        status.innerHTML = `
+            <div>
+                圖片：
+                ${imageList.length}
+            </div>
 
-            <b>
-                OpenAI OCR + Google Translation V9
-            </b>
+            <div>
+                處理：
+                ${processedCount}
+            </div>
 
-            <br>
+            <div>
+                完成：
+                ${completedCount}
+            </div>
 
-            圖片：
-            ${totalImages}
+            <div>
+                失敗：
+                ${failedCount}
+            </div>
 
-            <br>
+            <div>
+                OCR切片：
+                ${totalTiles}
+            </div>
 
-            處理：
-            ${processingCount}
+            <div>
+                OCR區塊：
+                ${totalOCRBlocks}
+            </div>
 
-            <br>
-
-            完成：
-            ${completedCount}
-
-            <br>
-
-            失敗：
-            ${failedCount}
-
-            <br>
-
-            OCR切片：
-            ${ocrTiles}
-
-            <br>
-
-            OCR區塊：
-            ${ocrBlocks}
-
-            ${
-                message
-                    ? `<br><small>${escapeHTML(message)}</small>`
-                    : ""
-            }
+            <div>
+                ${stage}
+            </div>
         `;
     }
 
 
-    function escapeHTML(
-        text
-    ) {
+    /*
+     * =========================================================
+     * Utility
+     * =========================================================
+     */
 
-        return String(text)
-            .replace(
-                /&/g,
-                "&amp;"
+    function sleep(ms) {
+        return new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    ms
+                )
+        );
+    }
+
+
+    function clamp(
+        value,
+        min,
+        max
+    ) {
+        return Math.max(
+            min,
+            Math.min(
+                max,
+                value
             )
-            .replace(
-                /</g,
-                "&lt;"
-            )
-            .replace(
-                />/g,
-                "&gt;"
-            )
-            .replace(
-                /"/g,
-                "&quot;"
-            );
+        );
     }
 
 
     /*
-     * ============================================================
-     * GM Request
-     * ============================================================
+     * =========================================================
+     * GM.xmlHttpRequest wrapper
+     * =========================================================
      */
 
     function gmRequest(
-        details
+        options
     ) {
-
         return new Promise(
-            (
-                resolve,
-                reject
-            ) => {
+            (resolve, reject) => {
 
-                const fn =
-
-                    typeof GM !==
-                        "undefined" &&
-
+                const requestFunction =
+                    typeof GM !== "undefined" &&
                     typeof GM.xmlHttpRequest ===
                         "function"
-
                         ? GM.xmlHttpRequest
+                        : typeof GM_xmlhttpRequest ===
+                          "function"
+                        ? GM_xmlhttpRequest
+                        : null;
 
-                        :
-
-                    (
-                        typeof GM_xmlhttpRequest ===
-                            "function"
-
-                            ? GM_xmlhttpRequest
-
-                            : null
-                    );
-
-
-                if (!fn) {
-
+                if (!requestFunction) {
                     reject(
                         new Error(
                             "GM.xmlHttpRequest unavailable"
@@ -252,37 +203,29 @@
                     return;
                 }
 
-
-                fn({
-
-                    ...details,
+                requestFunction({
+                    ...options,
 
                     onload:
-                        resolve,
+                        response => {
+                            resolve(
+                                response
+                            );
+                        },
 
                     onerror:
-                        () =>
+                        error => {
                             reject(
-                                new Error(
-                                    "GM request error"
-                                )
-                            ),
+                                error
+                            );
+                        },
 
                     ontimeout:
-                        () =>
+                        error => {
                             reject(
-                                new Error(
-                                    "GM request timeout"
-                                )
-                            ),
-
-                    onabort:
-                        () =>
-                            reject(
-                                new Error(
-                                    "GM request aborted"
-                                )
-                            )
+                                error
+                            );
+                        }
                 });
             }
         );
@@ -290,60 +233,84 @@
 
 
     /*
-     * ============================================================
-     * Image
-     * ============================================================
+     * =========================================================
+     * Download image
+     * =========================================================
      */
 
-    function bufferToBlob(
-        buffer
+    async function downloadImage(
+        src
     ) {
+        const response =
+            await gmRequest({
+                method: "GET",
+                url: src,
+                responseType:
+                    "arraybuffer",
+                timeout:
+                    60000
+            });
 
-        return new Blob(
-            [buffer],
-            {
-                type:
-                    "image/jpeg"
-            }
-        );
+        if (
+            !response ||
+            response.status < 200 ||
+            response.status >= 400
+        ) {
+            throw new Error(
+                `Image download failed: ${response?.status}`
+            );
+        }
+
+        const blob =
+            new Blob(
+                [
+                    response.response
+                ],
+                {
+                    type:
+                        response.responseHeaders
+                            ?.match(
+                                /content-type:\s*([^\r\n]+)/i
+                            )?.[1] ||
+                        "image/jpeg"
+                }
+            );
+
+        return blob;
     }
 
 
-    function blobToImage(
+    /*
+     * =========================================================
+     * Blob -> HTMLImageElement
+     * =========================================================
+     */
+
+    function loadImage(
         blob
     ) {
-
         return new Promise(
-            (
-                resolve,
-                reject
-            ) => {
+            (resolve, reject) => {
 
                 const url =
                     URL.createObjectURL(
                         blob
                     );
 
-                const image =
+                const img =
                     new Image();
 
-
-                image.onload =
+                img.onload =
                     () => {
-
                         URL.revokeObjectURL(
                             url
                         );
 
-                        resolve(
-                            image
-                        );
+                        resolve(img);
                     };
 
-
-                image.onerror =
+                img.onerror =
                     () => {
-
                         URL.revokeObjectURL(
                             url
                         );
@@ -355,212 +322,82 @@
                         );
                     };
 
-
-                image.src =
-                    url;
+                img.src = url;
             }
         );
-    }
-
-
-    function canvasToBase64(
-        canvas
-    ) {
-
-        return new Promise(
-            (
-                resolve,
-                reject
-            ) => {
-
-                canvas.toBlob(
-                    blob => {
-
-                        if (!blob) {
-
-                            reject(
-                                new Error(
-                                    "Canvas toBlob failed"
-                                )
-                            );
-
-                            return;
-                        }
-
-
-                        const reader =
-                            new FileReader();
-
-
-                        reader.onload =
-                            () => {
-
-                                resolve(
-                                    String(
-                                        reader.result
-                                    ).split(",")[1]
-                                );
-                            };
-
-
-                        reader.onerror =
-                            () => {
-
-                                reject(
-                                    new Error(
-                                        "FileReader failed"
-                                    )
-                                );
-                            };
-
-
-                        reader.readAsDataURL(
-                            blob
-                        );
-
-                    },
-
-                    "image/jpeg",
-
-                    0.92
-                );
-            }
-        );
-    }
-
-
-    async function downloadImage(
-        img
-    ) {
-
-        const src =
-            img.currentSrc ||
-            img.src;
-
-
-        if (!src) {
-
-            throw new Error(
-                "No image source"
-            );
-        }
-
-
-        updateStatus(
-            "取得原圖"
-        );
-
-
-        const response =
-            await gmRequest({
-
-                method:
-                    "GET",
-
-                url:
-                    src,
-
-                responseType:
-                    "arraybuffer",
-
-                timeout:
-                    IMAGE_TIMEOUT
-            });
-
-
-        if (
-            response.status >= 400
-        ) {
-
-            throw new Error(
-                "Image HTTP " +
-                response.status
-            );
-        }
-
-
-        return response.response;
     }
 
 
     /*
-     * ============================================================
-     * Tiles
-     * ============================================================
+     * =========================================================
+     * Canvas -> JPEG Base64
+     * =========================================================
      */
 
-    async function createTiles(
-        buffer
+    function canvasToBase64(
+        canvas
     ) {
-
-        const blob =
-            bufferToBlob(
-                buffer
+        const dataURL =
+            canvas.toDataURL(
+                "image/jpeg",
+                0.92
             );
 
-        const image =
-            await blobToImage(
-                blob
+        return dataURL
+            .replace(
+                /^data:image\/jpeg;base64,/,
+                ""
             );
+    }
 
 
-        const width =
-            image.naturalWidth;
+    /*
+     * =========================================================
+     * Create OCR tiles
+     * =========================================================
+     */
 
-        const height =
-            image.naturalHeight;
+    function createOCRTiles(
+        img
+    ) {
+        const originalWidth =
+            img.naturalWidth;
 
+        const originalHeight =
+            img.naturalHeight;
 
         const tiles = [];
 
-
         /*
-         * 短圖
+         * -----------------------------------------------------
+         * Short image
+         * -----------------------------------------------------
          */
 
         if (
-            height <=
-            TILE_HEIGHT
+            originalHeight <= TILE_HEIGHT
         ) {
-
-            const scale =
-                Math.min(
-                    OCR_SCALE,
-
-                    Math.max(
-                        1,
-
-                        1024 /
-                        Math.max(
-                            width,
-                            height
-                        )
-                    )
-                );
-
-
             const canvas =
                 document.createElement(
                     "canvas"
                 );
 
-
             canvas.width =
                 Math.round(
-                    width * scale
+                    originalWidth *
+                    OCR_SCALE
                 );
 
             canvas.height =
                 Math.round(
-                    height * scale
+                    originalHeight *
+                    OCR_SCALE
                 );
-
 
             const ctx =
                 canvas.getContext(
                     "2d"
                 );
-
 
             ctx.imageSmoothingEnabled =
                 true;
@@ -568,100 +405,79 @@
             ctx.imageSmoothingQuality =
                 "high";
 
-
             ctx.drawImage(
-
-                image,
-
-                0,
-                0,
-                width,
-                height,
-
+                img,
                 0,
                 0,
                 canvas.width,
                 canvas.height
             );
 
-
-            const base64 =
-                await canvasToBase64(
-                    canvas
-                );
-
-
             tiles.push({
+                image:
+                    canvasToBase64(
+                        canvas
+                    ),
 
-                id:
-                    0,
+                offsetX: 0,
+                offsetY: 0,
 
-                imageBase64:
-                    base64,
+                scale:
+                    OCR_SCALE,
 
-                offsetX:
-                    0,
+                pixelWidth:
+                    canvas.width,
 
-                offsetY:
-                    0,
-
-                scale
+                pixelHeight:
+                    canvas.height
             });
 
-
-            return {
-                tiles,
-                width,
-                height
-            };
+            return tiles;
         }
 
 
         /*
-         * 長圖
+         * -----------------------------------------------------
+         * Long image
+         * -----------------------------------------------------
          */
 
         let y = 0;
-        let id = 0;
-
 
         while (
-            y < height
+            y < originalHeight
         ) {
+            const remaining =
+                originalHeight -
+                y;
 
-            const tileHeight =
+            const tileOriginalHeight =
                 Math.min(
                     TILE_HEIGHT,
-                    height - y
+                    remaining
                 );
-
-
-            const scale =
-                OCR_SCALE;
-
 
             const canvas =
                 document.createElement(
                     "canvas"
                 );
 
-
             canvas.width =
                 Math.round(
-                    width * scale
+                    originalWidth *
+                    OCR_SCALE
                 );
 
             canvas.height =
                 Math.round(
-                    tileHeight * scale
+                    tileOriginalHeight *
+                    OCR_SCALE
                 );
-
 
             const ctx =
                 canvas.getContext(
                     "2d"
                 );
-
 
             ctx.imageSmoothingEnabled =
                 true;
@@ -669,995 +485,1107 @@
             ctx.imageSmoothingQuality =
                 "high";
 
-
             ctx.drawImage(
-
-                image,
+                img,
 
                 0,
                 y,
-                width,
-                tileHeight,
+
+                originalWidth,
+                tileOriginalHeight,
 
                 0,
                 0,
+
                 canvas.width,
                 canvas.height
             );
 
-
-            const base64 =
-                await canvasToBase64(
-                    canvas
-                );
-
-
             tiles.push({
+                image:
+                    canvasToBase64(
+                        canvas
+                    ),
 
-                id,
+                offsetX: 0,
+                offsetY: y,
 
-                imageBase64:
-                    base64,
+                scale:
+                    OCR_SCALE,
 
-                offsetX:
-                    0,
+                pixelWidth:
+                    canvas.width,
 
-                offsetY:
-                    y,
-
-                scale
+                pixelHeight:
+                    canvas.height
             });
 
-
-            id++;
-
+            /*
+             * Move forward while keeping overlap.
+             */
 
             if (
                 y +
-                tileHeight >=
-                height
+                tileOriginalHeight >=
+                originalHeight
             ) {
-
                 break;
             }
-
 
             y +=
                 TILE_HEIGHT -
                 TILE_OVERLAP;
         }
 
-
-        return {
-            tiles,
-            width,
-            height
-        };
+        return tiles;
     }
 
 
     /*
-     * ============================================================
-     * Worker
-     * ============================================================
+     * =========================================================
+     * Send OCR request to Worker
+     * =========================================================
      */
 
-    async function sendTiles(
-        tiles
+    async function sendToWorker(
+        tiles,
+        imageWidth,
+        imageHeight
     ) {
+        return new Promise(
+            (resolve, reject) => {
 
-        updateStatus(
-            "OpenAI Vision OCR"
+                let finished =
+                    false;
+
+                const timeout =
+                    setTimeout(
+                        () => {
+                            if (
+                                finished
+                            ) {
+                                return;
+                            }
+
+                            finished =
+                                true;
+
+                            reject(
+                                new Error(
+                                    "Worker timeout"
+                                )
+                            );
+                        },
+                        WORKER_TIMEOUT
+                    );
+
+
+                gmRequest({
+                    method: "POST",
+
+                    url:
+                        WORKER_URL,
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    data:
+                        JSON.stringify({
+                            version:
+                                "V9.1",
+
+                            image_width:
+                                imageWidth,
+
+                            image_height:
+                                imageHeight,
+
+                            tiles:
+                                tiles
+                        }),
+
+                    timeout:
+                        WORKER_TIMEOUT
+
+                })
+                    .then(
+                        response => {
+
+                            if (
+                                finished
+                            ) {
+                                return;
+                            }
+
+                            finished =
+                                true;
+
+                            clearTimeout(
+                                timeout
+                            );
+
+                            if (
+                                !response ||
+                                response.status <
+                                    200 ||
+                                response.status >=
+                                    300
+                            ) {
+                                reject(
+                                    new Error(
+                                        `Worker HTTP ${response?.status}`
+                                    )
+                                );
+
+                                return;
+                            }
+
+                            let data;
+
+                            try {
+                                data =
+                                    JSON.parse(
+                                        response.responseText
+                                    );
+                            } catch (
+                                error
+                            ) {
+                                reject(
+                                    new Error(
+                                        "Worker JSON parse failed"
+                                    )
+                                );
+
+                                return;
+                            }
+
+                            if (
+                                data.error
+                            ) {
+                                reject(
+                                    new Error(
+                                        data.error
+                                    )
+                                );
+
+                                return;
+                            }
+
+                            resolve(
+                                data
+                            );
+                        }
+                    )
+                    .catch(
+                        error => {
+
+                            if (
+                                finished
+                            ) {
+                                return;
+                            }
+
+                            finished =
+                                true;
+
+                            clearTimeout(
+                                timeout
+                            );
+
+                            reject(
+                                error
+                            );
+                        }
+                    );
+            }
         );
-
-
-        ocrTiles +=
-            tiles.length;
-
-
-        const response =
-            await gmRequest({
-
-                method:
-                    "POST",
-
-                url:
-                    WORKER_URL,
-
-                headers: {
-
-                    "Content-Type":
-                        "application/json"
-                },
-
-                data:
-                    JSON.stringify({
-                        tiles
-                    }),
-
-                responseType:
-                    "text",
-
-                timeout:
-                    WORKER_TIMEOUT
-            });
-
-
-        if (
-            response.status >= 400
-        ) {
-
-            throw new Error(
-                "Worker HTTP " +
-                response.status
-            );
-        }
-
-
-        let result;
-
-
-        try {
-
-            result =
-                JSON.parse(
-                    response.responseText
-                );
-
-        } catch {
-
-            throw new Error(
-                "Invalid Worker JSON"
-            );
-        }
-
-
-        if (
-            result.error
-        ) {
-
-            throw new Error(
-                result.error
-            );
-        }
-
-
-        ocrBlocks +=
-            (
-                result.text_blocks ||
-                []
-            ).length;
-
-
-        return result;
     }
 
 
     /*
-     * ============================================================
-     * Overlay
-     * ============================================================
+     * =========================================================
+     * Create image-relative overlay
+     * =========================================================
      */
 
-    function createLayer(
-        img
+    function createOverlay(
+        originalImg
     ) {
-
         const old =
-            imageLayers.get(
-                img
-            );
+            originalImg.__gmTranslatorOverlay;
 
-
-        if (
-            old &&
-            old.isConnected
-        ) {
-
-            return old;
+        if (old) {
+            old.remove();
         }
 
-
-        const layer =
+        const overlay =
             document.createElement(
                 "div"
             );
 
+        overlay.className =
+            "gm-manga-translator-overlay";
 
         Object.assign(
-            layer.style,
+            overlay.style,
             {
-
-                position:
-                    "fixed",
-
-                left:
-                    "0px",
-
-                top:
-                    "0px",
-
-                width:
-                    "0px",
-
-                height:
-                    "0px",
-
-                zIndex:
-                    "2147483646",
-
+                position: "fixed",
+                left: "0",
+                top: "0",
+                width: "0",
+                height: "0",
                 pointerEvents:
                     "none",
-
-                overflow:
-                    "visible"
+                zIndex:
+                    "2147483646"
             }
         );
 
-
-        document.documentElement
-            .appendChild(
-                layer
-            );
-
-
-        imageLayers.set(
-            img,
-            layer
+        document.body.appendChild(
+            overlay
         );
 
+        originalImg.__gmTranslatorOverlay =
+            overlay;
 
-        return layer;
-    }
-
-
-    function updateLayer(
-        img
-    ) {
-
-        const layer =
-            imageLayers.get(
-                img
-            );
-
-
-        if (!layer) {
-            return;
-        }
-
-
-        const rect =
-            img.getBoundingClientRect();
-
-
-        layer.style.left =
-            `${rect.left}px`;
-
-        layer.style.top =
-            `${rect.top}px`;
-
-        layer.style.width =
-            `${rect.width}px`;
-
-        layer.style.height =
-            `${rect.height}px`;
+        return overlay;
     }
 
 
     /*
-     * ============================================================
-     * Font
-     * ============================================================
+     * =========================================================
+     * Render translation blocks
+     * =========================================================
+     */
+
+    function renderTranslations(
+        originalImg,
+        result
+    ) {
+        if (
+            !result ||
+            !Array.isArray(
+                result.text_blocks
+            )
+        ) {
+            return;
+        }
+
+        const imageWidth =
+            Number(
+                result.image_width
+            ) ||
+            originalImg.naturalWidth;
+
+        const imageHeight =
+            Number(
+                result.image_height
+            ) ||
+            originalImg.naturalHeight;
+
+        const overlay =
+            createOverlay(
+                originalImg
+            );
+
+
+        function render() {
+
+            const rect =
+                originalImg.getBoundingClientRect();
+
+            if (
+                rect.width <= 0 ||
+                rect.height <= 0
+            ) {
+                return;
+            }
+
+            Object.assign(
+                overlay.style,
+                {
+                    left:
+                        `${rect.left}px`,
+
+                    top:
+                        `${rect.top}px`,
+
+                    width:
+                        `${rect.width}px`,
+
+                    height:
+                        `${rect.height}px`
+                }
+            );
+
+
+            overlay.innerHTML =
+                "";
+
+
+            for (
+                const block
+                of result.text_blocks
+            ) {
+                if (
+                    !block ||
+                    !block.translation
+                ) {
+                    continue;
+                }
+
+                /*
+                 * Original-image pixels
+                 * -> percentages.
+                 */
+
+                const left =
+                    clamp(
+                        Number(
+                            block.x
+                        ) /
+                        imageWidth *
+                        100,
+
+                        0,
+                        100
+                    );
+
+                const top =
+                    clamp(
+                        Number(
+                            block.y
+                        ) /
+                        imageHeight *
+                        100,
+
+                        0,
+                        100
+                    );
+
+                const width =
+                    clamp(
+                        Number(
+                            block.width
+                        ) /
+                        imageWidth *
+                        100,
+
+                        0,
+                        100
+                    );
+
+                const height =
+                    clamp(
+                        Number(
+                            block.height
+                        ) /
+                        imageHeight *
+                        100,
+
+                        0,
+                        100
+                    );
+
+
+                const box =
+                    document.createElement(
+                        "div"
+                    );
+
+                box.className =
+                    "gm-manga-translator-box";
+
+
+                Object.assign(
+                    box.style,
+                    {
+                        position:
+                            "absolute",
+
+                        left:
+                            `${left}%`,
+
+                        top:
+                            `${top}%`,
+
+                        width:
+                            `${width}%`,
+
+                        height:
+                            `${height}%`,
+
+                        background:
+                            "#ffffff",
+
+                        color:
+                            "#000000",
+
+                        overflow:
+                            "hidden",
+
+                        display:
+                            "flex",
+
+                        alignItems:
+                            "center",
+
+                        justifyContent:
+                            "center",
+
+                        textAlign:
+                            "center",
+
+                        boxSizing:
+                            "border-box",
+
+                        padding:
+                            "3px 6px",
+
+                        borderRadius:
+                            "4px",
+
+                        fontFamily:
+                            `"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif",
+
+                        fontWeight:
+                            "600",
+
+                        lineHeight:
+                            "1.2",
+
+                        wordBreak:
+                            "break-word",
+
+                        overflowWrap:
+                            "anywhere",
+
+                        pointerEvents:
+                            "none",
+
+                        opacity:
+                            "1",
+
+                        textShadow:
+                            "none"
+                    }
+                );
+
+
+                const text =
+                    document.createElement(
+                        "div"
+                    );
+
+                text.textContent =
+                    block.translation;
+
+
+                Object.assign(
+                    text.style,
+                    {
+                        width:
+                            "100%",
+
+                        height:
+                            "100%",
+
+                        display:
+                            "flex",
+
+                        alignItems:
+                            "center",
+
+                        justifyContent:
+                            "center",
+
+                        textAlign:
+                            "center",
+
+                        overflow:
+                            "hidden",
+
+                        wordBreak:
+                            "break-word",
+
+                        overflowWrap:
+                            "anywhere"
+                    }
+                );
+
+
+                box.appendChild(
+                    text
+                );
+
+                overlay.appendChild(
+                    box
+                );
+
+
+                /*
+                 * Auto font sizing.
+                 */
+
+                fitText(
+                    text,
+                    box
+                );
+            }
+        }
+
+
+        render();
+
+
+        /*
+         * Re-render when image
+         * position/size changes.
+         */
+
+        const resizeObserver =
+            new ResizeObserver(
+                () => render()
+            );
+
+        resizeObserver.observe(
+            originalImg
+        );
+
+        /*
+         * Keep overlay aligned
+         * during page scrolling.
+         */
+
+        let rafPending =
+            false;
+
+        function updateOnScroll() {
+
+            if (
+                rafPending
+            ) {
+                return;
+            }
+
+            rafPending =
+                true;
+
+            requestAnimationFrame(
+                () => {
+                    rafPending =
+                        false;
+
+                    render();
+                }
+            );
+        }
+
+        window.addEventListener(
+            "scroll",
+            updateOnScroll,
+            {
+                passive: true
+            }
+        );
+
+
+        /*
+         * Periodic check for manga
+         * readers that reposition images
+         * without triggering ResizeObserver.
+         */
+
+        const interval =
+            setInterval(
+                () => {
+
+                    if (
+                        !document.body.contains(
+                            originalImg
+                        )
+                    ) {
+                        clearInterval(
+                            interval
+                        );
+
+                        resizeObserver.disconnect();
+
+                        window.removeEventListener(
+                            "scroll",
+                            updateOnScroll
+                        );
+
+                        return;
+                    }
+
+                    render();
+
+                },
+                1000
+            );
+    }
+
+
+    /*
+     * =========================================================
+     * Automatic font fitting
+     * =========================================================
      */
 
     function fitText(
+        textElement,
         box
     ) {
-
-        const rect =
-            box.getBoundingClientRect();
-
-
-        if (
-            rect.width <= 2 ||
-            rect.height <= 2
-        ) {
-
-            return;
-        }
-
-
-        let size =
+        let fontSize =
             Math.max(
-                9,
-
+                10,
                 Math.min(
-                    36,
-                    rect.height * 0.55
+                    28,
+                    box.clientHeight *
+                        0.55
                 )
             );
 
-
-        box.style.fontSize =
-            `${size}px`;
-
-
-        for (
-            let i = 0;
-            i < 20;
-            i++
-        ) {
-
-            if (
-
-                box.scrollHeight <=
-                    box.clientHeight + 2 &&
-
-                box.scrollWidth <=
-                    box.clientWidth + 2
-
-            ) {
-
-                break;
-            }
-
-
-            size *=
-                0.88;
-
-
-            if (
-                size < 8
-            ) {
-
-                size = 8;
-
-                break;
-            }
-
-
-            box.style.fontSize =
-                `${size}px`;
-        }
-    }
-
-
-    /*
-     * ============================================================
-     * Render
-     * ============================================================
-     */
-
-    function render(
-        img,
-        result,
-        width,
-        height
-    ) {
-
-        const old =
-            imageLayers.get(
-                img
-            );
-
-
-        if (
-            old &&
-            old.isConnected
-        ) {
-
-            old.remove();
-        }
-
-
-        const layer =
-            createLayer(
-                img
-            );
-
-
-        updateLayer(
-            img
-        );
-
-
-        const blocks =
-            result.text_blocks ||
-            [];
-
-
-        for (
-            const block
-            of blocks
-        ) {
-
-            if (
-                !block.translation
-            ) {
-
-                continue;
-            }
-
-
-            const box =
-                document.createElement(
-                    "div"
-                );
-
-
-            const x =
-                Number(
-                    block.x
-                );
-
-            const y =
-                Number(
-                    block.y
-                );
-
-            const w =
-                Number(
-                    block.width
-                );
-
-            const h =
-                Number(
-                    block.height
-                );
-
-
-            Object.assign(
-                box.style,
-                {
-
-                    position:
-                        "absolute",
-
-                    left:
-                        `${x / width * 100}%`,
-
-                    top:
-                        `${y / height * 100}%`,
-
-                    width:
-                        `${w / width * 100}%`,
-
-                    height:
-                        `${h / height * 100}%`,
-
-                    boxSizing:
-                        "border-box",
-
-                    background:
-                        "#ffffff",
-
-                    color:
-                        "#000000",
-
-                    padding:
-                        "3px 5px",
-
-                    borderRadius:
-                        "3px",
-
-                    display:
-                        "flex",
-
-                    alignItems:
-                        "center",
-
-                    justifyContent:
-                        "center",
-
-                    textAlign:
-                        "center",
-
-                    overflow:
-                        "hidden",
-
-                    pointerEvents:
-                        "none",
-
-                    fontFamily:
-                        "\"Noto Sans TC\", \"PingFang TC\", \"Microsoft JhengHei\", sans-serif",
-
-                    fontWeight:
-                        "600",
-
-                    lineHeight:
-                        "1.1",
-
-                    whiteSpace:
-                        "pre-wrap",
-
-                    wordBreak:
-                        "break-word"
-                }
-            );
-
-
-            box.textContent =
-                block.translation;
-
-
-            layer.appendChild(
-                box
-            );
-
-
-            requestAnimationFrame(
-                () =>
-                    fitText(
-                        box
-                    )
-            );
-        }
-    }
-
-
-    /*
-     * ============================================================
-     * Observer
-     * ============================================================
-     */
-
-    function observeImage(
-        img
-    ) {
-
-        if (
-            typeof ResizeObserver ===
-            "undefined"
-        ) {
-
-            return;
-        }
-
-
-        if (
-            resizeObservers.has(
-                img
+        textElement.style.fontSize =
+            `${fontSize}px`;
+
+
+        let guard = 0;
+
+        while (
+            guard < 20 &&
+            (
+                textElement.scrollHeight >
+                    textElement.clientHeight ||
+                textElement.scrollWidth >
+                    textElement.clientWidth
             )
         ) {
+            fontSize *= 0.88;
 
-            return;
+            if (
+                fontSize < 8
+            ) {
+                fontSize = 8;
+                break;
+            }
+
+            textElement.style.fontSize =
+                `${fontSize}px`;
+
+            guard++;
         }
-
-
-        const observer =
-            new ResizeObserver(
-                () =>
-                    updateLayer(
-                        img
-                    )
-            );
-
-
-        observer.observe(
-            img
-        );
-
-
-        resizeObservers.set(
-            img,
-            observer
-        );
     }
 
 
     /*
-     * ============================================================
-     * Scroll / resize
-     * ============================================================
-     */
-
-    window.addEventListener(
-        "scroll",
-        () => {
-
-            for (
-                const img
-                of document.images
-            ) {
-
-                if (
-                    imageLayers.has(
-                        img
-                    )
-                ) {
-
-                    updateLayer(
-                        img
-                    );
-                }
-            }
-        },
-        {
-            passive:
-                true
-        }
-    );
-
-
-    window.addEventListener(
-        "resize",
-        () => {
-
-            for (
-                const img
-                of document.images
-            ) {
-
-                if (
-                    imageLayers.has(
-                        img
-                    )
-                ) {
-
-                    updateLayer(
-                        img
-                    );
-                }
-            }
-        }
-    );
-
-
-    /*
-     * ============================================================
-     * Process image
-     * ============================================================
+     * =========================================================
+     * Process one image
+     * =========================================================
      */
 
     async function processImage(
-        img
+        img,
+        index
     ) {
-
-        if (
-            !isCandidateImage(
-                img
-            )
-        ) {
-
-            return;
-        }
-
-
-        const src =
-            img.currentSrc ||
-            img.src;
-
-
-        if (!src) {
-            return;
-        }
-
-
-        if (
-            processedImages.get(
-                img
-            ) === src
-        ) {
-
-            return;
-        }
-
-
-        processedImages.set(
-            img,
-            src
-        );
-
-
-        processingCount++;
-
-
         try {
 
-            /*
-             * 取得原圖
-             */
-
-            const buffer =
-                await downloadImage(
-                    img
-                );
-
-
-            /*
-             * 切片 + 放大
-             */
+            processedCount++;
 
             updateStatus(
-                "切割 / 放大圖片"
+                `取得圖片 ${index + 1}/${imageList.length}`
             );
 
 
-            const prepared =
-                await createTiles(
-                    buffer
+            const src =
+                img.currentSrc ||
+                img.src;
+
+            if (
+                !src ||
+                src.startsWith(
+                    "data:"
+                ) ||
+                src.startsWith(
+                    "blob:"
+                )
+            ) {
+                throw new Error(
+                    "Invalid image source"
                 );
+            }
 
 
             /*
-             * OpenAI OCR
-             * +
-             * Google Translation
+             * -------------------------------------------------
+             * Download original image
+             * -------------------------------------------------
              */
+
+            const blob =
+                await downloadImage(
+                    src
+                );
+
+
+            updateStatus(
+                `解析圖片 ${index + 1}/${imageList.length}`
+            );
+
+
+            const decoded =
+                await loadImage(
+                    blob
+                );
+
+            const imageWidth =
+                decoded.naturalWidth;
+
+            const imageHeight =
+                decoded.naturalHeight;
+
+
+            if (
+                imageWidth <
+                    MIN_IMAGE_WIDTH ||
+                imageHeight <
+                    MIN_IMAGE_HEIGHT
+            ) {
+                throw new Error(
+                    "Image too small"
+                );
+            }
+
+
+            /*
+             * -------------------------------------------------
+             * Create OCR tiles
+             * -------------------------------------------------
+             */
+
+            updateStatus(
+                `建立 OCR 切片 ${index + 1}/${imageList.length}`
+            );
+
+
+            const tiles =
+                createOCRTiles(
+                    decoded
+                );
+
+            totalTiles +=
+                tiles.length;
+
+
+            /*
+             * -------------------------------------------------
+             * Send to Worker
+             * -------------------------------------------------
+             */
+
+            updateStatus(
+                `送往 Worker ${index + 1}/${imageList.length}`
+            );
+
 
             const result =
-                await sendTiles(
-                    prepared.tiles
+                await sendToWorker(
+                    tiles,
+                    imageWidth,
+                    imageHeight
                 );
 
 
-            /*
-             * Overlay
-             */
+            const blockCount =
+                Array.isArray(
+                    result.text_blocks
+                )
+                    ? result.text_blocks.length
+                    : 0;
+
+            totalOCRBlocks +=
+                blockCount;
+
 
             updateStatus(
-                "翻譯完成"
+                `Google 翻譯完成 ${index + 1}/${imageList.length}`
             );
 
 
-            render(
+            /*
+             * -------------------------------------------------
+             * Render
+             * -------------------------------------------------
+             */
 
+            renderTranslations(
                 img,
-
-                result,
-
-                prepared.width,
-
-                prepared.height
-            );
-
-
-            observeImage(
-                img
+                result
             );
 
 
             completedCount++;
 
 
-        } catch (
-            error
-        ) {
-
-            console.error(
-                "[GMW V9]",
-                error
+            updateStatus(
+                `完成 ${index + 1}/${imageList.length}`
             );
 
+        } catch (error) {
 
             failedCount++;
 
-
-            processedImages.delete(
-                img
+            console.error(
+                "[GMW V9.1]",
+                error
             );
-
-
-        } finally {
-
-            processingCount--;
-
 
             updateStatus(
-                "翻譯完成"
+                `失敗 ${index + 1}/${imageList.length}: ${
+                    error?.message ||
+                    String(error)
+                }`
             );
         }
     }
 
 
     /*
-     * ============================================================
-     * Candidate
-     * ============================================================
+     * =========================================================
+     * Find manga images
+     * =========================================================
      */
 
-    function isCandidateImage(
-        img
-    ) {
+    function collectImages() {
 
-        if (!img) {
-            return false;
-        }
+        const images =
+            Array.from(
+                document.images
+            );
 
+        const result = [];
 
-        const width =
-            img.naturalWidth ||
-            0;
-
-        const height =
-            img.naturalHeight ||
-            0;
-
-
-        if (
-            width <
-                MIN_IMAGE_WIDTH ||
-
-            height <
-                MIN_IMAGE_HEIGHT
+        for (
+            const img
+            of images
         ) {
 
-            return false;
+            if (
+                !img ||
+                !img.src
+            ) {
+                continue;
+            }
+
+            /*
+             * Ignore tiny images.
+             */
+
+            const width =
+                img.naturalWidth ||
+                img.width;
+
+            const height =
+                img.naturalHeight ||
+                img.height;
+
+            if (
+                width <
+                    MIN_IMAGE_WIDTH ||
+                height <
+                    MIN_IMAGE_HEIGHT
+            ) {
+                continue;
+            }
+
+
+            /*
+             * Ignore obvious UI icons.
+             */
+
+            const ratio =
+                width / height;
+
+            if (
+                width < 300 &&
+                height < 300
+            ) {
+                continue;
+            }
+
+            if (
+                ratio > 5 &&
+                width < 1000
+            ) {
+                continue;
+            }
+
+
+            result.push(
+                img
+            );
         }
 
-
-        const ratio =
-            width /
-            height;
-
-
-        return (
-            ratio <= 8 &&
-            ratio >= 0.125
-        );
+        return result;
     }
 
 
     /*
-     * ============================================================
-     * Process all
-     * ============================================================
+     * =========================================================
+     * Main runner
+     * =========================================================
      */
 
-    async function processAllImages() {
+    async function run() {
 
         if (
-            scanRunning
+            isRunning
         ) {
-
             return;
         }
 
-
-        scanRunning =
+        isRunning =
             true;
 
-
-        try {
-
-            const images =
-                Array.from(
-                    document.images
-                );
+        updateStatus(
+            "搜尋漫畫圖片..."
+        );
 
 
-            totalImages =
-                images.length;
+        /*
+         * Wait for dynamic manga
+         * readers to finish loading.
+         */
+
+        await sleep(
+            1500
+        );
 
 
-            updateStatus(
-                "掃描圖片"
+        imageList =
+            collectImages();
+
+
+        updateStatus(
+            `找到 ${imageList.length} 張圖片`
+        );
+
+
+        /*
+         * -----------------------------------------------------
+         * Sequential processing
+         * -----------------------------------------------------
+         */
+
+        for (
+            let i = 0;
+            i < imageList.length;
+            i++
+        ) {
+
+            const img =
+                imageList[i];
+
+            await processImage(
+                img,
+                i
             );
 
+            /*
+             * Small delay prevents
+             * browser/network overload.
+             */
 
-            for (
-                const img
-                of images
-            ) {
-
-                if (
-                    !img.complete
-                ) {
-
-                    await new Promise(
-                        resolve => {
-
-                            const done =
-                                () =>
-                                    resolve();
-
-
-                            img.addEventListener(
-                                "load",
-                                done,
-                                {
-                                    once:
-                                        true
-                                }
-                            );
-
-
-                            img.addEventListener(
-                                "error",
-                                done,
-                                {
-                                    once:
-                                        true
-                                }
-                            );
-
-
-                            setTimeout(
-                                resolve,
-                                5000
-                            );
-                        }
-                    );
-                }
-
-
-                await processImage(
-                    img
-                );
-            }
-
-
-        } finally {
-
-            scanRunning =
-                false;
-
-
-            updateStatus(
-                "掃描完成"
+            await sleep(
+                200
             );
         }
+
+
+        updateStatus(
+            `全部完成：${completedCount}/${imageList.length}`
+        );
+
+        isRunning =
+            false;
     }
 
 
     /*
-     * ============================================================
-     * Dynamic images
-     * ============================================================
+     * =========================================================
+     * Mutation observer
+     * =========================================================
+     *
+     * Manga readers often load images
+     * dynamically. Start once the page
+     * is sufficiently ready.
+     * =========================================================
      */
 
-    let mutationTimer =
-        null;
+    let started =
+        false;
 
 
-    const observer =
-        new MutationObserver(
+    function startOnce() {
+
+        if (
+            started
+        ) {
+            return;
+        }
+
+        started =
+            true;
+
+        run();
+    }
+
+
+    if (
+        document.readyState ===
+        "loading"
+    ) {
+
+        document.addEventListener(
+            "DOMContentLoaded",
             () => {
-
-                clearTimeout(
-                    mutationTimer
+                setTimeout(
+                    startOnce,
+                    1000
                 );
-
-
-                mutationTimer =
-                    setTimeout(
-                        () => {
-
-                            totalImages =
-                                document.images.length;
-
-
-                            processAllImages();
-
-                        },
-                        1500
-                    );
+            },
+            {
+                once: true
             }
         );
 
+    } else {
 
-    observer.observe(
-        document.documentElement,
-        {
-            childList:
-                true,
-
-            subtree:
-                true
-        }
-    );
+        setTimeout(
+            startOnce,
+            1000
+        );
+    }
 
 
     /*
-     * ============================================================
-     * Start
-     * ============================================================
+     * =========================================================
+     * Safety fallback
+     * =========================================================
      */
 
     setTimeout(
-        () =>
-            processAllImages(),
-        1500
+        () => {
+            if (
+                !started
+            ) {
+                startOnce();
+            }
+        },
+        5000
     );
 
 })();
