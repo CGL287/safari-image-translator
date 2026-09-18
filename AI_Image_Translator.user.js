@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI 圖片自動翻譯
 // @namespace    https://github.com/CGL287/safari-image-translator
-// @version      5.0.0
+// @version      6.0.0
 // @description  Safari 漫畫圖片自動 OCR 並翻譯成繁體中文
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -12,47 +12,33 @@
 (function () {
     'use strict';
 
-    /*
-     * ============================================================
-     * Cloudflare Worker
-     * ============================================================
-     */
-
     const WORKER_URL =
         'https://safari-image-translator.cgl20050126.workers.dev';
 
-
     /*
-     * ============================================================
-     * 漫畫模式設定
-     * ============================================================
+     * 漫畫設定
      */
 
-    // 最小圖片尺寸
     const MIN_WIDTH = 150;
     const MIN_HEIGHT = 80;
 
-    // 一次只處理一張圖片
     const MAX_CONCURRENT = 1;
 
-    // 圖片進入可視範圍後等待時間
     const DELAY = 300;
 
-    // 上下預先處理距離
-    const ROOT_MARGIN = 800;
+    const ROOT_MARGIN = 900;
 
-    // API 失敗時最多重試次數
     const MAX_RETRIES = 2;
 
-    // 翻譯框黑色背景透明度
-    const COVER_OPACITY = 0.90;
-
-
     /*
-     * ============================================================
-     * 狀態管理
-     * ============================================================
+     * 翻譯框額外擴張比例
+     *
+     * 目的：
+     * 避免英文從翻譯框邊緣露出。
      */
+
+    const EXPAND_X = 0.10;
+    const EXPAND_Y = 0.12;
 
     const processed = new WeakSet();
     const processing = new WeakSet();
@@ -66,17 +52,21 @@
      * ============================================================
      */
 
-    const style = document.createElement('style');
+    const style =
+        document.createElement('style');
 
     style.textContent = `
+
         .ai-trans-wrapper {
             position: relative !important;
         }
 
         .ai-trans-layer {
             position: absolute !important;
+
             left: 0 !important;
             top: 0 !important;
+
             width: 100% !important;
             height: 100% !important;
 
@@ -97,18 +87,9 @@
             align-items: center !important;
             justify-content: center !important;
 
-            padding: 2px 4px !important;
+            padding: 3px 6px !important;
 
-            color: white !important;
-
-            background: rgba(
-                0,
-                0,
-                0,
-                ${COVER_OPACITY}
-            ) !important;
-
-            border-radius: 3px !important;
+            border-radius: 6px !important;
 
             font-family:
                 -apple-system,
@@ -118,7 +99,7 @@
                 "Microsoft JhengHei",
                 sans-serif !important;
 
-            font-weight: 500 !important;
+            font-weight: 600 !important;
 
             line-height: 1.15 !important;
 
@@ -132,10 +113,21 @@
 
             overflow-wrap: break-word !important;
 
-            text-shadow:
-                0 1px 2px rgba(0, 0, 0, .9) !important;
-
             pointer-events: none !important;
+
+            text-shadow: none !important;
+        }
+
+        .ai-trans-box.light {
+            color: #111 !important;
+            background: rgba(255,255,255,.94) !important;
+        }
+
+        .ai-trans-box.dark {
+            color: #fff !important;
+            background: rgba(0,0,0,.88) !important;
+            text-shadow:
+                0 1px 2px rgba(0,0,0,.9) !important;
         }
 
         .ai-trans-message {
@@ -145,7 +137,7 @@
             top: 50% !important;
 
             transform:
-                translate(-50%, -50%) !important;
+                translate(-50%,-50%) !important;
 
             z-index: 2147483647 !important;
 
@@ -154,7 +146,7 @@
             color: white !important;
 
             background:
-                rgba(0, 0, 0, .82) !important;
+                rgba(0,0,0,.82) !important;
 
             padding: 8px 12px !important;
 
@@ -169,8 +161,6 @@
             max-width: 80% !important;
 
             text-align: center !important;
-
-            white-space: nowrap !important;
         }
     `;
 
@@ -179,20 +169,22 @@
 
     /*
      * ============================================================
-     * 工具
+     * Utility
      * ============================================================
      */
 
     function sleep(ms) {
-        return new Promise(resolve => {
-            setTimeout(resolve, ms);
-        });
+        return new Promise(
+            resolve => setTimeout(resolve, ms)
+        );
     }
 
 
     function isValidImage(img) {
 
-        if (!(img instanceof HTMLImageElement)) {
+        if (
+            !(img instanceof HTMLImageElement)
+        ) {
             return false;
         }
 
@@ -218,11 +210,7 @@
             img.currentSrc ||
             img.src;
 
-        if (!src) {
-            return false;
-        }
-
-        return true;
+        return !!src;
     }
 
 
@@ -235,10 +223,10 @@
             return null;
         }
 
-        const position =
-            getComputedStyle(parent).position;
-
-        if (position === 'static') {
+        if (
+            getComputedStyle(parent).position ===
+            'static'
+        ) {
             parent.style.position =
                 'relative';
         }
@@ -264,9 +252,7 @@
             .querySelectorAll(
                 '.ai-trans-message'
             )
-            .forEach(element => {
-                element.remove();
-            });
+            .forEach(e => e.remove());
 
         const message =
             document.createElement('div');
@@ -294,15 +280,13 @@
             .querySelectorAll(
                 '.ai-trans-message'
             )
-            .forEach(element => {
-                element.remove();
-            });
+            .forEach(e => e.remove());
     }
 
 
     /*
      * ============================================================
-     * ArrayBuffer → Base64
+     * Image → Base64
      * ============================================================
      */
 
@@ -339,12 +323,6 @@
         return btoa(binary);
     }
 
-
-    /*
-     * ============================================================
-     * 下載圖片
-     * ============================================================
-     */
 
     function downloadImage(url) {
 
@@ -405,12 +383,6 @@
     }
 
 
-    /*
-     * ============================================================
-     * 取得圖片 Data URL
-     * ============================================================
-     */
-
     async function getImageData(img) {
 
         const src =
@@ -428,59 +400,40 @@
                 'data:image/'
             )
         ) {
-
             return src;
         }
 
-        try {
+        const response =
+            await downloadImage(src);
 
-            const response =
-                await downloadImage(src);
+        const headers =
+            response.responseHeaders ||
+            '';
 
-            const headers =
-                response.responseHeaders ||
-                '';
-
-            const match =
-                headers.match(
-                    /content-type:\s*([^\r\n]+)/i
-                );
-
-            const contentType =
-                match
-                    ? match[1].trim()
-                    : 'image/jpeg';
-
-            const encoded =
-                arrayBufferToBase64(
-                    response.response
-                );
-
-            return (
-                `data:${contentType};base64,${encoded}`
+        const match =
+            headers.match(
+                /content-type:\s*([^\r\n]+)/i
             );
 
-        } catch (error) {
+        const contentType =
+            match
+                ? match[1].trim()
+                : 'image/jpeg';
 
-            console.warn(
-                '[AI Image Translator] 圖片下載失敗',
-                error
+        const encoded =
+            arrayBufferToBase64(
+                response.response
             );
 
-            /*
-             * 如果下載失敗，直接回傳原始 URL。
-             * Worker 目前主要接受 data:image，
-             * 所以這種情況仍可能失敗。
-             */
-
-            return src;
-        }
+        return (
+            `data:${contentType};base64,${encoded}`
+        );
     }
 
 
     /*
      * ============================================================
-     * Worker API
+     * Worker request
      * ============================================================
      */
 
@@ -519,7 +472,7 @@
                                     response.status +
                                     ': ' +
                                     response.responseText
-                                        .slice(0, 500)
+                                        .slice(0,500)
                                 )
                             );
 
@@ -528,12 +481,11 @@
 
                         try {
 
-                            const result =
+                            resolve(
                                 JSON.parse(
                                     response.responseText
-                                );
-
-                            resolve(result);
+                                )
+                            );
 
                         } catch {
 
@@ -570,7 +522,7 @@
 
     /*
      * ============================================================
-     * 判斷 OCR 是否有效
+     * Validate result
      * ============================================================
      */
 
@@ -588,38 +540,21 @@
             return false;
         }
 
-        if (
-            !result.text_blocks.length
-        ) {
-            return false;
-        }
-
-        let useful = 0;
-
-        for (
-            const block of result.text_blocks
-        ) {
-
-            if (
+        return result.text_blocks.some(
+            block =>
                 block &&
                 typeof block.translation ===
                     'string' &&
                 block.translation.trim() !== '' &&
                 Number(block.width) > 0 &&
                 Number(block.height) > 0
-            ) {
-
-                useful++;
-            }
-        }
-
-        return useful > 0;
+        );
     }
 
 
     /*
      * ============================================================
-     * 渲染翻譯
+     * Render
      * ============================================================
      */
 
@@ -636,9 +571,8 @@
             .querySelectorAll(
                 '.ai-trans-layer'
             )
-            .forEach(element => {
-                element.remove();
-            });
+            .forEach(e => e.remove());
+
 
         const layer =
             document.createElement('div');
@@ -649,29 +583,27 @@
         wrapper.appendChild(layer);
 
 
-        /*
-         * 使用圖片實際顯示尺寸
-         */
-
         const rect =
             img.getBoundingClientRect();
 
         const displayWidth =
             img.clientWidth ||
-            rect.width ||
-            0;
+            rect.width;
 
         const displayHeight =
             img.clientHeight ||
-            rect.height ||
-            0;
+            rect.height;
 
 
         const imageWidth =
-            Number(result.image_width);
+            Number(
+                result.image_width
+            );
 
         const imageHeight =
-            Number(result.image_height);
+            Number(
+                result.image_height
+            );
 
 
         if (
@@ -716,84 +648,135 @@
             }
 
 
-            const bx =
+            let x =
                 Number(block.x);
 
-            const by =
+            let y =
                 Number(block.y);
 
-            const bw =
+            let width =
                 Number(block.width);
 
-            const bh =
+            let height =
                 Number(block.height);
 
 
             if (
-                !Number.isFinite(bx) ||
-                !Number.isFinite(by) ||
-                !Number.isFinite(bw) ||
-                !Number.isFinite(bh)
+                !Number.isFinite(x) ||
+                !Number.isFinite(y) ||
+                !Number.isFinite(width) ||
+                !Number.isFinite(height)
             ) {
                 continue;
             }
 
 
             if (
-                bw <= 0 ||
-                bh <= 0
+                width <= 0 ||
+                height <= 0
             ) {
                 continue;
             }
 
 
-            const x =
+            /*
+             * ----------------------------------------------------
+             * Expand bounding box
+             * ----------------------------------------------------
+             */
+
+            const expandX =
+                width * EXPAND_X;
+
+            const expandY =
+                height * EXPAND_Y;
+
+
+            x -= expandX;
+            y -= expandY;
+
+            width +=
+                expandX * 2;
+
+            height +=
+                expandY * 2;
+
+
+            /*
+             * ----------------------------------------------------
+             * Convert to display coordinates
+             * ----------------------------------------------------
+             */
+
+            let displayX =
+                x * scaleX;
+
+            let displayY =
+                y * scaleY;
+
+            let displayWidthBlock =
+                width * scaleX;
+
+            let displayHeightBlock =
+                height * scaleY;
+
+
+            /*
+             * ----------------------------------------------------
+             * Clamp
+             * ----------------------------------------------------
+             */
+
+            displayX =
                 Math.max(
                     0,
                     Math.min(
                         displayWidth,
-                        bx * scaleX
+                        displayX
                     )
                 );
 
-
-            const y =
+            displayY =
                 Math.max(
                     0,
                     Math.min(
                         displayHeight,
-                        by * scaleY
+                        displayY
                     )
                 );
 
 
-            const width =
-                Math.max(
-                    1,
-                    Math.min(
-                        displayWidth - x,
-                        bw * scaleX
-                    )
+            displayWidthBlock =
+                Math.min(
+                    displayWidth -
+                    displayX,
+
+                    displayWidthBlock
                 );
 
 
-            const height =
-                Math.max(
-                    1,
-                    Math.min(
-                        displayHeight - y,
-                        bh * scaleY
-                    )
+            displayHeightBlock =
+                Math.min(
+                    displayHeight -
+                    displayY,
+
+                    displayHeightBlock
                 );
 
 
             if (
-                width < 2 ||
-                height < 2
+                displayWidthBlock <= 2 ||
+                displayHeightBlock <= 2
             ) {
                 continue;
             }
 
+
+            /*
+             * ----------------------------------------------------
+             * Create translation box
+             * ----------------------------------------------------
+             */
 
             const box =
                 document.createElement('div');
@@ -802,29 +785,44 @@
                 'ai-trans-box';
 
 
+            const background =
+                block.background ===
+                'dark'
+                    ? 'dark'
+                    : 'light';
+
+
+            box.classList.add(
+                background
+            );
+
+
             box.style.left =
-                x + 'px';
+                displayX + 'px';
 
             box.style.top =
-                y + 'px';
+                displayY + 'px';
 
             box.style.width =
-                width + 'px';
+                displayWidthBlock + 'px';
 
             box.style.height =
-                height + 'px';
+                displayHeightBlock + 'px';
 
 
             /*
-             * 根據文字區域高度自動調整字體
+             * ----------------------------------------------------
+             * Font size
+             * ----------------------------------------------------
              */
 
             const fontSize =
                 Math.max(
-                    11,
+                    12,
                     Math.min(
-                        32,
-                        height * 0.70
+                        34,
+                        displayHeightBlock *
+                        0.68
                     )
                 );
 
@@ -844,7 +842,7 @@
 
     /*
      * ============================================================
-     * 單張圖片處理
+     * Process image
      * ============================================================
      */
 
@@ -861,10 +859,6 @@
 
         processing.add(img);
 
-
-        /*
-         * 等待前一張圖片完成
-         */
 
         while (
             active >= MAX_CONCURRENT
@@ -883,10 +877,6 @@
                 null;
 
 
-            /*
-             * 最多嘗試 MAX_RETRIES + 1 次
-             */
-
             for (
                 let attempt = 0;
                 attempt <= MAX_RETRIES;
@@ -895,45 +885,26 @@
 
                 try {
 
-                    if (
+                    showMessage(
+                        img,
+
                         attempt === 0
-                    ) {
+                            ? '正在 OCR＋翻譯…'
+                            : `正在重新辨識… ${attempt + 1}/${MAX_RETRIES + 1}`
+                    );
 
-                        showMessage(
-                            img,
-                            '正在 OCR＋翻譯…'
-                        );
-
-                    } else {
-
-                        showMessage(
-                            img,
-                            `OCR 第 ${attempt + 1} 次嘗試…`
-                        );
-                    }
-
-
-                    /*
-                     * 取得圖片
-                     */
 
                     const image =
-                        await getImageData(img);
+                        await getImageData(
+                            img
+                        );
 
-
-                    /*
-                     * 呼叫 Worker
-                     */
 
                     const result =
                         await requestTranslation(
                             image
                         );
 
-
-                    /*
-                     * 判斷結果
-                     */
 
                     if (
                         hasUsefulResult(
@@ -950,23 +921,22 @@
 
                         processed.add(img);
 
+
                         console.log(
-                            '[AI Image Translator] 翻譯完成：',
+                            '[AI Image Translator V6]',
+                            '翻譯完成：',
                             result.text_blocks.length,
                             '個文字區域'
                         );
+
 
                         return;
                     }
 
 
-                    /*
-                     * OCR 沒抓到有效文字
-                     */
-
                     lastError =
                         new Error(
-                            'OCR 沒有取得有效文字區域'
+                            'OCR 沒有取得有效文字'
                         );
 
 
@@ -975,9 +945,7 @@
                         MAX_RETRIES
                     ) {
 
-                        await sleep(
-                            1200
-                        );
+                        await sleep(1200);
                     }
 
 
@@ -987,9 +955,7 @@
                         error;
 
                     console.warn(
-                        '[AI Image Translator] 第 ' +
-                        (attempt + 1) +
-                        ' 次失敗：',
+                        '[AI Image Translator V6]',
                         error
                     );
 
@@ -999,17 +965,11 @@
                         MAX_RETRIES
                     ) {
 
-                        await sleep(
-                            1500
-                        );
+                        await sleep(1500);
                     }
                 }
             }
 
-
-            /*
-             * 所有嘗試都失敗
-             */
 
             showMessage(
                 img,
@@ -1019,14 +979,6 @@
                     '未知錯誤'
                 )
             );
-
-
-            /*
-             * 不加入 processed。
-             *
-             * 這樣之後重新進入可視範圍時，
-             * 還可以再次嘗試。
-             */
 
 
         } finally {
@@ -1040,7 +992,7 @@
 
     /*
      * ============================================================
-     * 排程
+     * Schedule
      * ============================================================
      */
 
@@ -1084,6 +1036,7 @@
                 }
 
             },
+
             DELAY
         );
     }
@@ -1097,6 +1050,7 @@
 
     const imageObserver =
         new IntersectionObserver(
+
             entries => {
 
                 for (
@@ -1114,6 +1068,7 @@
                 }
 
             },
+
             {
                 rootMargin:
                     `${ROOT_MARGIN}px 0px ${ROOT_MARGIN}px 0px`,
@@ -1126,46 +1081,39 @@
 
     /*
      * ============================================================
-     * 掃描所有圖片
+     * Scan images
      * ============================================================
      */
 
     function scanImages() {
 
-        const images =
-            document.querySelectorAll(
-                'img'
-            );
+        document
+            .querySelectorAll('img')
+            .forEach(img => {
 
+                if (
+                    !processed.has(img) &&
+                    !processing.has(img) &&
+                    isValidImage(img)
+                ) {
 
-        for (
-            const img of images
-        ) {
-
-            if (
-                !processed.has(img) &&
-                !processing.has(img) &&
-                isValidImage(img)
-            ) {
-
-                imageObserver.observe(
-                    img
-                );
-            }
-        }
+                    imageObserver.observe(
+                        img
+                    );
+                }
+            });
     }
 
 
     /*
      * ============================================================
-     * 監控動態載入的漫畫圖片
+     * Mutation observer
      * ============================================================
      */
 
     const mutationObserver =
         new MutationObserver(
             () => {
-
                 scanImages();
             }
         );
@@ -1173,12 +1121,13 @@
 
     /*
      * ============================================================
-     * 監控圖片載入
+     * Image load observer
      * ============================================================
      */
 
     document.addEventListener(
         'load',
+
         event => {
 
             if (
@@ -1202,13 +1151,14 @@
             }
 
         },
+
         true
     );
 
 
     /*
      * ============================================================
-     * 初始化
+     * Init
      * ============================================================
      */
 
@@ -1221,6 +1171,7 @@
 
             mutationObserver.observe(
                 document.body,
+
                 {
                     childList: true,
                     subtree: true
@@ -1230,7 +1181,7 @@
 
 
         console.log(
-            '[AI Image Translator V5] 已啟動'
+            '[AI Image Translator V6] 已啟動'
         );
     }
 
