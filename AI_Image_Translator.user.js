@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         AI 圖片自動翻譯 V8.1 - Paragraph Google Vision
+// @name         AI 圖片自動翻譯 V9 - OpenAI OCR + Google Translation
 // @namespace    CGL287
-// @version      8.1.0
-// @description  Manga OCR with tiled/upscaled Google Vision paragraph translation
+// @version      9.0.0
+// @description  OpenAI Vision OCR + Google Translation manga translator
 // @match        *://*/*
 // @run-at       document-idle
 // @grant        GM.xmlHttpRequest
@@ -14,22 +14,36 @@
 
     "use strict";
 
+
     const WORKER_URL =
         "https://safari-image-translator.cgl20050126.workers.dev";
+
 
     const MIN_IMAGE_WIDTH = 200;
     const MIN_IMAGE_HEIGHT = 200;
 
     const IMAGE_TIMEOUT = 30000;
-    const WORKER_TIMEOUT = 120000;
+    const WORKER_TIMEOUT = 180000;
+
 
     /*
-     * OCR 切片設定
+     * OCR
      */
 
     const TILE_HEIGHT = 900;
     const TILE_OVERLAP = 180;
+
+    /*
+     * OpenAI Vision 不一定需要 2×，
+     * 但保留目前 V8 的放大策略。
+     */
+
     const OCR_SCALE = 2;
+
+
+    /*
+     * 狀態
+     */
 
     let scanRunning = false;
 
@@ -40,6 +54,7 @@
 
     let ocrTiles = 0;
     let ocrBlocks = 0;
+
 
     const processedImages =
         new WeakMap();
@@ -53,58 +68,108 @@
 
     /*
      * ============================================================
-     * Status Panel
+     * Status
      * ============================================================
      */
 
     const status =
-        document.createElement("div");
+        document.createElement(
+            "div"
+        );
+
 
     Object.assign(
         status.style,
         {
-            position: "fixed",
-            top: "10px",
-            left: "10px",
 
-            zIndex: "2147483647",
+            position:
+                "fixed",
+
+            top:
+                "10px",
+
+            left:
+                "10px",
+
+            zIndex:
+                "2147483647",
 
             background:
                 "rgba(20,20,20,.92)",
 
-            color: "#fff",
+            color:
+                "#fff",
 
-            padding: "9px 12px",
+            padding:
+                "9px 12px",
 
-            borderRadius: "9px",
+            borderRadius:
+                "9px",
 
-            fontSize: "12px",
+            fontSize:
+                "12px",
 
-            lineHeight: "1.45",
+            lineHeight:
+                "1.45",
 
             fontFamily:
                 "-apple-system, BlinkMacSystemFont, sans-serif",
 
-            pointerEvents: "none",
+            pointerEvents:
+                "none",
 
-            minWidth: "190px"
+            minWidth:
+                "200px"
         }
     );
 
+
     document.documentElement
-        .appendChild(status);
+        .appendChild(
+            status
+        );
 
 
-    function updateStatus(message = "") {
+    function updateStatus(
+        message = ""
+    ) {
 
         status.innerHTML = `
-            <b>Google Manga Translator V8.1</b><br>
-            圖片：${totalImages}<br>
-            處理：${processingCount}<br>
-            完成：${completedCount}<br>
-            失敗：${failedCount}<br>
-            OCR切片：${ocrTiles}<br>
-            OCR段落：${ocrBlocks}
+
+            <b>
+                OpenAI OCR + Google Translation V9
+            </b>
+
+            <br>
+
+            圖片：
+            ${totalImages}
+
+            <br>
+
+            處理：
+            ${processingCount}
+
+            <br>
+
+            完成：
+            ${completedCount}
+
+            <br>
+
+            失敗：
+            ${failedCount}
+
+            <br>
+
+            OCR切片：
+            ${ocrTiles}
+
+            <br>
+
+            OCR區塊：
+            ${ocrBlocks}
+
             ${
                 message
                     ? `<br><small>${escapeHTML(message)}</small>`
@@ -114,13 +179,27 @@
     }
 
 
-    function escapeHTML(text) {
+    function escapeHTML(
+        text
+    ) {
 
         return String(text)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;");
+            .replace(
+                /&/g,
+                "&amp;"
+            )
+            .replace(
+                /</g,
+                "&lt;"
+            )
+            .replace(
+                />/g,
+                "&gt;"
+            )
+            .replace(
+                /"/g,
+                "&quot;"
+            );
     }
 
 
@@ -130,24 +209,37 @@
      * ============================================================
      */
 
-    function gmRequest(details) {
+    function gmRequest(
+        details
+    ) {
 
         return new Promise(
-            (resolve, reject) => {
+            (
+                resolve,
+                reject
+            ) => {
 
                 const fn =
-                    typeof GM !== "undefined" &&
-                    typeof GM.xmlHttpRequest === "function"
+
+                    typeof GM !==
+                        "undefined" &&
+
+                    typeof GM.xmlHttpRequest ===
+                        "function"
 
                         ? GM.xmlHttpRequest
 
-                        : (
-                            typeof GM_xmlhttpRequest === "function"
+                        :
 
-                                ? GM_xmlhttpRequest
+                    (
+                        typeof GM_xmlhttpRequest ===
+                            "function"
 
-                                : null
-                        );
+                            ? GM_xmlhttpRequest
+
+                            : null
+                    );
+
 
                 if (!fn) {
 
@@ -160,32 +252,37 @@
                     return;
                 }
 
+
                 fn({
 
                     ...details,
 
-                    onload: resolve,
+                    onload:
+                        resolve,
 
-                    onerror: () =>
-                        reject(
-                            new Error(
-                                "GM request error"
-                            )
-                        ),
+                    onerror:
+                        () =>
+                            reject(
+                                new Error(
+                                    "GM request error"
+                                )
+                            ),
 
-                    ontimeout: () =>
-                        reject(
-                            new Error(
-                                "GM request timeout"
-                            )
-                        ),
+                    ontimeout:
+                        () =>
+                            reject(
+                                new Error(
+                                    "GM request timeout"
+                                )
+                            ),
 
-                    onabort: () =>
-                        reject(
-                            new Error(
-                                "GM request aborted"
+                    onabort:
+                        () =>
+                            reject(
+                                new Error(
+                                    "GM request aborted"
+                                )
                             )
-                        )
                 });
             }
         );
@@ -194,60 +291,87 @@
 
     /*
      * ============================================================
-     * Image loading
+     * Image
      * ============================================================
      */
 
-    function bufferToBlob(buffer) {
+    function bufferToBlob(
+        buffer
+    ) {
 
         return new Blob(
             [buffer],
             {
-                type: "image/jpeg"
+                type:
+                    "image/jpeg"
             }
         );
     }
 
 
-    function blobToImage(blob) {
+    function blobToImage(
+        blob
+    ) {
 
         return new Promise(
-            (resolve, reject) => {
+            (
+                resolve,
+                reject
+            ) => {
 
                 const url =
-                    URL.createObjectURL(blob);
+                    URL.createObjectURL(
+                        blob
+                    );
 
                 const image =
                     new Image();
 
-                image.onload = () => {
 
-                    URL.revokeObjectURL(url);
+                image.onload =
+                    () => {
 
-                    resolve(image);
-                };
+                        URL.revokeObjectURL(
+                            url
+                        );
 
-                image.onerror = () => {
+                        resolve(
+                            image
+                        );
+                    };
 
-                    URL.revokeObjectURL(url);
 
-                    reject(
-                        new Error(
-                            "Image decode failed"
-                        )
-                    );
-                };
+                image.onerror =
+                    () => {
 
-                image.src = url;
+                        URL.revokeObjectURL(
+                            url
+                        );
+
+                        reject(
+                            new Error(
+                                "Image decode failed"
+                            )
+                        );
+                    };
+
+
+                image.src =
+                    url;
             }
         );
     }
 
 
-    function canvasToBase64(canvas) {
+    function canvasToBase64(
+        canvas
+    ) {
 
         return new Promise(
-            (resolve, reject) => {
+            (
+                resolve,
+                reject
+            ) => {
 
                 canvas.toBlob(
                     blob => {
@@ -263,30 +387,37 @@
                             return;
                         }
 
+
                         const reader =
                             new FileReader();
 
-                        reader.onload = () => {
 
-                            resolve(
-                                String(
-                                    reader.result
-                                ).split(",")[1]
-                            );
-                        };
+                        reader.onload =
+                            () => {
 
-                        reader.onerror = () => {
+                                resolve(
+                                    String(
+                                        reader.result
+                                    ).split(",")[1]
+                                );
+                            };
 
-                            reject(
-                                new Error(
-                                    "FileReader failed"
-                                )
-                            );
-                        };
+
+                        reader.onerror =
+                            () => {
+
+                                reject(
+                                    new Error(
+                                        "FileReader failed"
+                                    )
+                                );
+                            };
+
 
                         reader.readAsDataURL(
                             blob
                         );
+
                     },
 
                     "image/jpeg",
@@ -298,11 +429,14 @@
     }
 
 
-    async function downloadImage(img) {
+    async function downloadImage(
+        img
+    ) {
 
         const src =
             img.currentSrc ||
             img.src;
+
 
         if (!src) {
 
@@ -311,16 +445,20 @@
             );
         }
 
+
         updateStatus(
             "取得原圖"
         );
 
+
         const response =
             await gmRequest({
 
-                method: "GET",
+                method:
+                    "GET",
 
-                url: src,
+                url:
+                    src,
 
                 responseType:
                     "arraybuffer",
@@ -328,6 +466,7 @@
                 timeout:
                     IMAGE_TIMEOUT
             });
+
 
         if (
             response.status >= 400
@@ -339,23 +478,31 @@
             );
         }
 
+
         return response.response;
     }
 
 
     /*
      * ============================================================
-     * Create OCR Tiles
+     * Tiles
      * ============================================================
      */
 
-    async function createTiles(buffer) {
+    async function createTiles(
+        buffer
+    ) {
 
         const blob =
-            bufferToBlob(buffer);
+            bufferToBlob(
+                buffer
+            );
 
         const image =
-            await blobToImage(blob);
+            await blobToImage(
+                blob
+            );
+
 
         const width =
             image.naturalWidth;
@@ -363,23 +510,26 @@
         const height =
             image.naturalHeight;
 
+
         const tiles = [];
 
 
         /*
-         * 短圖：
-         * 整張圖片直接放大。
+         * 短圖
          */
 
         if (
-            height <= TILE_HEIGHT
+            height <=
+            TILE_HEIGHT
         ) {
 
             const scale =
                 Math.min(
                     OCR_SCALE,
+
                     Math.max(
                         1,
+
                         1024 /
                         Math.max(
                             width,
@@ -388,10 +538,12 @@
                     )
                 );
 
+
             const canvas =
                 document.createElement(
                     "canvas"
                 );
+
 
             canvas.width =
                 Math.round(
@@ -403,10 +555,12 @@
                     height * scale
                 );
 
+
             const ctx =
                 canvas.getContext(
                     "2d"
                 );
+
 
             ctx.imageSmoothingEnabled =
                 true;
@@ -414,7 +568,9 @@
             ctx.imageSmoothingQuality =
                 "high";
 
+
             ctx.drawImage(
+
                 image,
 
                 0,
@@ -428,24 +584,30 @@
                 canvas.height
             );
 
+
             const base64 =
                 await canvasToBase64(
                     canvas
                 );
 
+
             tiles.push({
 
-                id: 0,
+                id:
+                    0,
 
                 imageBase64:
                     base64,
 
-                offsetX: 0,
+                offsetX:
+                    0,
 
-                offsetY: 0,
+                offsetY:
+                    0,
 
                 scale
             });
+
 
             return {
                 tiles,
@@ -456,14 +618,12 @@
 
 
         /*
-         * 長圖：
-         * 900px 一段
-         * 180px overlap
-         * 2×
+         * 長圖
          */
 
         let y = 0;
         let id = 0;
+
 
         while (
             y < height
@@ -475,13 +635,16 @@
                     height - y
                 );
 
+
             const scale =
                 OCR_SCALE;
+
 
             const canvas =
                 document.createElement(
                     "canvas"
                 );
+
 
             canvas.width =
                 Math.round(
@@ -493,16 +656,19 @@
                     tileHeight * scale
                 );
 
+
             const ctx =
                 canvas.getContext(
                     "2d"
                 );
+
 
             ctx.imageSmoothingEnabled =
                 true;
 
             ctx.imageSmoothingQuality =
                 "high";
+
 
             ctx.drawImage(
 
@@ -519,10 +685,12 @@
                 canvas.height
             );
 
+
             const base64 =
                 await canvasToBase64(
                     canvas
                 );
+
 
             tiles.push({
 
@@ -531,22 +699,28 @@
                 imageBase64:
                     base64,
 
-                offsetX: 0,
+                offsetX:
+                    0,
 
-                offsetY: y,
+                offsetY:
+                    y,
 
                 scale
             });
 
+
             id++;
 
+
             if (
-                y + tileHeight >=
+                y +
+                tileHeight >=
                 height
             ) {
 
                 break;
             }
+
 
             y +=
                 TILE_HEIGHT -
@@ -564,28 +738,34 @@
 
     /*
      * ============================================================
-     * Send OCR
+     * Worker
      * ============================================================
      */
 
-    async function sendTiles(tiles) {
+    async function sendTiles(
+        tiles
+    ) {
 
         updateStatus(
-            "Google Vision OCR"
+            "OpenAI Vision OCR"
         );
+
 
         ocrTiles +=
             tiles.length;
 
+
         const response =
             await gmRequest({
 
-                method: "POST",
+                method:
+                    "POST",
 
                 url:
                     WORKER_URL,
 
                 headers: {
+
                     "Content-Type":
                         "application/json"
                 },
@@ -602,6 +782,7 @@
                     WORKER_TIMEOUT
             });
 
+
         if (
             response.status >= 400
         ) {
@@ -612,7 +793,9 @@
             );
         }
 
+
         let result;
+
 
         try {
 
@@ -628,6 +811,7 @@
             );
         }
 
+
         if (
             result.error
         ) {
@@ -637,11 +821,13 @@
             );
         }
 
+
         ocrBlocks +=
             (
                 result.text_blocks ||
                 []
             ).length;
+
 
         return result;
     }
@@ -649,14 +835,19 @@
 
     /*
      * ============================================================
-     * Image Overlay
+     * Overlay
      * ============================================================
      */
 
-    function createLayer(img) {
+    function createLayer(
+        img
+    ) {
 
         const old =
-            imageLayers.get(img);
+            imageLayers.get(
+                img
+            );
+
 
         if (
             old &&
@@ -666,24 +857,31 @@
             return old;
         }
 
+
         const layer =
             document.createElement(
                 "div"
             );
 
+
         Object.assign(
             layer.style,
             {
 
-                position: "fixed",
+                position:
+                    "fixed",
 
-                left: "0px",
+                left:
+                    "0px",
 
-                top: "0px",
+                top:
+                    "0px",
 
-                width: "0px",
+                width:
+                    "0px",
 
-                height: "0px",
+                height:
+                    "0px",
 
                 zIndex:
                     "2147483646",
@@ -696,29 +894,41 @@
             }
         );
 
+
         document.documentElement
-            .appendChild(layer);
+            .appendChild(
+                layer
+            );
+
 
         imageLayers.set(
             img,
             layer
         );
 
+
         return layer;
     }
 
 
-    function updateLayer(img) {
+    function updateLayer(
+        img
+    ) {
 
         const layer =
-            imageLayers.get(img);
+            imageLayers.get(
+                img
+            );
+
 
         if (!layer) {
             return;
         }
 
+
         const rect =
             img.getBoundingClientRect();
+
 
         layer.style.left =
             `${rect.left}px`;
@@ -736,14 +946,17 @@
 
     /*
      * ============================================================
-     * Font fitting
+     * Font
      * ============================================================
      */
 
-    function fitText(box) {
+    function fitText(
+        box
+    ) {
 
         const rect =
             box.getBoundingClientRect();
+
 
         if (
             rect.width <= 2 ||
@@ -753,17 +966,21 @@
             return;
         }
 
+
         let size =
             Math.max(
                 9,
+
                 Math.min(
                     36,
-                    rect.height * 0.58
+                    rect.height * 0.55
                 )
             );
 
+
         box.style.fontSize =
             `${size}px`;
+
 
         for (
             let i = 0;
@@ -772,17 +989,22 @@
         ) {
 
             if (
+
                 box.scrollHeight <=
                     box.clientHeight + 2 &&
 
                 box.scrollWidth <=
                     box.clientWidth + 2
+
             ) {
 
                 break;
             }
 
-            size *= 0.88;
+
+            size *=
+                0.88;
+
 
             if (
                 size < 8
@@ -792,6 +1014,7 @@
 
                 break;
             }
+
 
             box.style.fontSize =
                 `${size}px`;
@@ -813,7 +1036,10 @@
     ) {
 
         const old =
-            imageLayers.get(img);
+            imageLayers.get(
+                img
+            );
+
 
         if (
             old &&
@@ -823,10 +1049,17 @@
             old.remove();
         }
 
-        const layer =
-            createLayer(img);
 
-        updateLayer(img);
+        const layer =
+            createLayer(
+                img
+            );
+
+
+        updateLayer(
+            img
+        );
+
 
         const blocks =
             result.text_blocks ||
@@ -834,7 +1067,8 @@
 
 
         for (
-            const block of blocks
+            const block
+            of blocks
         ) {
 
             if (
@@ -844,22 +1078,32 @@
                 continue;
             }
 
+
             const box =
                 document.createElement(
                     "div"
                 );
 
+
             const x =
-                Number(block.x);
+                Number(
+                    block.x
+                );
 
             const y =
-                Number(block.y);
+                Number(
+                    block.y
+                );
 
             const w =
-                Number(block.width);
+                Number(
+                    block.width
+                );
 
             const h =
-                Number(block.height);
+                Number(
+                    block.height
+                );
 
 
             Object.assign(
@@ -931,13 +1175,21 @@
                 }
             );
 
+
             box.textContent =
                 block.translation;
 
-            layer.appendChild(box);
+
+            layer.appendChild(
+                box
+            );
+
 
             requestAnimationFrame(
-                () => fitText(box)
+                () =>
+                    fitText(
+                        box
+                    )
             );
         }
     }
@@ -945,11 +1197,13 @@
 
     /*
      * ============================================================
-     * Resize Observer
+     * Observer
      * ============================================================
      */
 
-    function observeImage(img) {
+    function observeImage(
+        img
+    ) {
 
         if (
             typeof ResizeObserver ===
@@ -959,19 +1213,30 @@
             return;
         }
 
+
         if (
-            resizeObservers.has(img)
+            resizeObservers.has(
+                img
+            )
         ) {
 
             return;
         }
 
+
         const observer =
             new ResizeObserver(
-                () => updateLayer(img)
+                () =>
+                    updateLayer(
+                        img
+                    )
             );
 
-        observer.observe(img);
+
+        observer.observe(
+            img
+        );
+
 
         resizeObservers.set(
             img,
@@ -982,7 +1247,7 @@
 
     /*
      * ============================================================
-     * Scroll / Resize
+     * Scroll / resize
      * ============================================================
      */
 
@@ -996,15 +1261,20 @@
             ) {
 
                 if (
-                    imageLayers.has(img)
+                    imageLayers.has(
+                        img
+                    )
                 ) {
 
-                    updateLayer(img);
+                    updateLayer(
+                        img
+                    );
                 }
             }
         },
         {
-            passive: true
+            passive:
+                true
         }
     );
 
@@ -1019,10 +1289,14 @@
             ) {
 
                 if (
-                    imageLayers.has(img)
+                    imageLayers.has(
+                        img
+                    )
                 ) {
 
-                    updateLayer(img);
+                    updateLayer(
+                        img
+                    );
                 }
             }
         }
@@ -1031,41 +1305,52 @@
 
     /*
      * ============================================================
-     * Process one image
+     * Process image
      * ============================================================
      */
 
-    async function processImage(img) {
+    async function processImage(
+        img
+    ) {
 
         if (
-            !isCandidateImage(img)
+            !isCandidateImage(
+                img
+            )
         ) {
 
             return;
         }
+
 
         const src =
             img.currentSrc ||
             img.src;
 
+
         if (!src) {
             return;
         }
 
+
         if (
-            processedImages.get(img) ===
-            src
+            processedImages.get(
+                img
+            ) === src
         ) {
 
             return;
         }
+
 
         processedImages.set(
             img,
             src
         );
 
+
         processingCount++;
+
 
         try {
 
@@ -1087,6 +1372,7 @@
                 "切割 / 放大圖片"
             );
 
+
             const prepared =
                 await createTiles(
                     buffer
@@ -1094,7 +1380,9 @@
 
 
             /*
-             * OCR + Paragraph translation
+             * OpenAI OCR
+             * +
+             * Google Translation
              */
 
             const result =
@@ -1104,40 +1392,56 @@
 
 
             /*
-             * Render
+             * Overlay
              */
 
             updateStatus(
                 "翻譯完成"
             );
 
+
             render(
+
                 img,
+
                 result,
+
                 prepared.width,
+
                 prepared.height
             );
 
-            observeImage(img);
+
+            observeImage(
+                img
+            );
+
 
             completedCount++;
 
-        } catch (error) {
+
+        } catch (
+            error
+        ) {
 
             console.error(
-                "[GMW V8.1]",
+                "[GMW V9]",
                 error
             );
 
+
             failedCount++;
+
 
             processedImages.delete(
                 img
             );
 
+
         } finally {
 
             processingCount--;
+
 
             updateStatus(
                 "翻譯完成"
@@ -1148,21 +1452,27 @@
 
     /*
      * ============================================================
-     * Candidate image
+     * Candidate
      * ============================================================
      */
 
-    function isCandidateImage(img) {
+    function isCandidateImage(
+        img
+    ) {
 
         if (!img) {
             return false;
         }
 
+
         const width =
-            img.naturalWidth || 0;
+            img.naturalWidth ||
+            0;
 
         const height =
-            img.naturalHeight || 0;
+            img.naturalHeight ||
+            0;
+
 
         if (
             width <
@@ -1175,8 +1485,11 @@
             return false;
         }
 
+
         const ratio =
-            width / height;
+            width /
+            height;
+
 
         return (
             ratio <= 8 &&
@@ -1187,17 +1500,23 @@
 
     /*
      * ============================================================
-     * Process all images
+     * Process all
      * ============================================================
      */
 
     async function processAllImages() {
 
-        if (scanRunning) {
+        if (
+            scanRunning
+        ) {
+
             return;
         }
 
-        scanRunning = true;
+
+        scanRunning =
+            true;
+
 
         try {
 
@@ -1206,8 +1525,10 @@
                     document.images
                 );
 
+
             totalImages =
                 images.length;
+
 
             updateStatus(
                 "掃描圖片"
@@ -1219,7 +1540,9 @@
                 of images
             ) {
 
-                if (!img.complete) {
+                if (
+                    !img.complete
+                ) {
 
                     await new Promise(
                         resolve => {
@@ -1228,21 +1551,26 @@
                                 () =>
                                     resolve();
 
+
                             img.addEventListener(
                                 "load",
                                 done,
                                 {
-                                    once: true
+                                    once:
+                                        true
                                 }
                             );
+
 
                             img.addEventListener(
                                 "error",
                                 done,
                                 {
-                                    once: true
+                                    once:
+                                        true
                                 }
                             );
+
 
                             setTimeout(
                                 resolve,
@@ -1252,14 +1580,18 @@
                     );
                 }
 
+
                 await processImage(
                     img
                 );
             }
 
+
         } finally {
 
-            scanRunning = false;
+            scanRunning =
+                false;
+
 
             updateStatus(
                 "掃描完成"
@@ -1274,7 +1606,9 @@
      * ============================================================
      */
 
-    let mutationTimer = null;
+    let mutationTimer =
+        null;
+
 
     const observer =
         new MutationObserver(
@@ -1284,12 +1618,14 @@
                     mutationTimer
                 );
 
+
                 mutationTimer =
                     setTimeout(
                         () => {
 
                             totalImages =
                                 document.images.length;
+
 
                             processAllImages();
 
@@ -1303,8 +1639,11 @@
     observer.observe(
         document.documentElement,
         {
-            childList: true,
-            subtree: true
+            childList:
+                true,
+
+            subtree:
+                true
         }
     );
 
@@ -1316,7 +1655,8 @@
      */
 
     setTimeout(
-        () => processAllImages(),
+        () =>
+            processAllImages(),
         1500
     );
 
