@@ -1,18 +1,17 @@
 // ==UserScript==
-// @name         AI 圖片自動翻譯 V7 - Google Vision
+// @name         AI 圖片自動翻譯 V7.1 - Google Vision
 // @namespace    manga-translator
-// @version      7.0.0
+// @version      7.1.0
 // @description  Google Vision OCR + Google Translation 漫畫自動翻譯
 // @match        *://*/*
-// @grant        none
+// @grant        GM.xmlHttpRequest
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// @run-at       document-end
 // ==/UserScript==
 
 (() => {
     "use strict";
-
-    // ==============================
-    // 設定
-    // ==============================
 
     const WORKER_URL =
         "https://safari-image-translator.cgl20050126.workers.dev";
@@ -21,44 +20,263 @@
     const MIN_HEIGHT = 80;
 
     const MAX_CONCURRENT = 1;
-
-    const DELAY = 250;
-
-    const ROOT_MARGIN = 1000;
-
     const MAX_RETRIES = 2;
 
-    // 擴大 Google Vision 回傳的文字區域
+    const ROOT_MARGIN = 1200;
+    const SCAN_DELAY = 500;
+
     const EXPAND_X = 0.20;
     const EXPAND_Y = 0.25;
 
     const PROCESSED_ATTR =
         "data-google-manga-translated";
 
-    // ==============================
-    // 狀態
-    // ==============================
-
     let running = 0;
-
     const queue = [];
+    const queued = new WeakSet();
 
-    const queued =
-        new WeakSet();
+    // =========================================================
+    // 狀態面板
+    // =========================================================
 
-    // ==============================
-    // 延遲
-    // ==============================
+    const stats = {
+        found: 0,
+        queued: 0,
+        processing: 0,
+        success: 0,
+        failed: 0,
+        ocrBlocks: 0
+    };
 
-    function sleep(ms) {
-        return new Promise(
-            resolve => setTimeout(resolve, ms)
+    function createStatusPanel() {
+        if (document.getElementById(
+            "google-manga-status"
+        )) {
+            return;
+        }
+
+        const panel =
+            document.createElement("div");
+
+        panel.id =
+            "google-manga-status";
+
+        panel.innerHTML = `
+            <div id="gm-status-title">
+                Google Manga Translator
+            </div>
+
+            <div id="gm-status-state">
+                ● 啟動中
+            </div>
+
+            <div id="gm-status-detail">
+                圖片：0　處理：0
+            </div>
+        `;
+
+        panel.style.cssText = `
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 2147483647;
+
+            padding: 10px 13px;
+
+            background: rgba(20,20,20,.92);
+            color: white;
+
+            border-radius: 10px;
+
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Noto Sans TC",
+                sans-serif;
+
+            font-size: 13px;
+
+            line-height: 1.45;
+
+            box-shadow:
+                0 3px 12px
+                rgba(0,0,0,.35);
+
+            pointer-events: none;
+        `;
+
+        document.documentElement.appendChild(
+            panel
         );
     }
 
-    // ==============================
-    // 圖片轉 Base64
-    // ==============================
+    function updateStatus(
+        state = null
+    ) {
+        const panel =
+            document.getElementById(
+                "google-manga-status"
+            );
+
+        if (!panel) return;
+
+        if (state) {
+            const stateEl =
+                document.getElementById(
+                    "gm-status-state"
+                );
+
+            if (stateEl) {
+                stateEl.textContent =
+                    state;
+            }
+        }
+
+        const detail =
+            document.getElementById(
+                "gm-status-detail"
+            );
+
+        if (detail) {
+            detail.textContent =
+                `圖片：${stats.found}　` +
+                `處理：${stats.processing}　` +
+                `完成：${stats.success}　` +
+                `失敗：${stats.failed}`;
+        }
+    }
+
+    // =========================================================
+    // 延遲
+    // =========================================================
+
+    function sleep(ms) {
+        return new Promise(
+            resolve => setTimeout(
+                resolve,
+                ms
+            )
+        );
+    }
+
+    // =========================================================
+    // GM XHR
+    // =========================================================
+
+    function gmRequest(details) {
+
+        const gm =
+            typeof GM !== "undefined" &&
+            typeof GM.xmlHttpRequest ===
+                "function"
+                ? GM.xmlHttpRequest
+                : typeof GM_xmlhttpRequest ===
+                    "function"
+                    ? GM_xmlhttpRequest
+                    : null;
+
+        if (!gm) {
+            return Promise.reject(
+                new Error(
+                    "Userscripts 不支援 GM.xmlHttpRequest"
+                )
+            );
+        }
+
+        return new Promise(
+            (resolve, reject) => {
+
+                let finished = false;
+
+                const options = {
+                    ...details,
+
+                    onload: response => {
+                        if (finished) return;
+
+                        finished = true;
+                        resolve(response);
+                    },
+
+                    onerror: error => {
+                        if (finished) return;
+
+                        finished = true;
+
+                        reject(
+                            new Error(
+                                "GM XHR error"
+                            )
+                        );
+                    },
+
+                    ontimeout: () => {
+                        if (finished) return;
+
+                        finished = true;
+
+                        reject(
+                            new Error(
+                                "GM XHR timeout"
+                            )
+                        );
+                    },
+
+                    onabort: () => {
+                        if (finished) return;
+
+                        finished = true;
+
+                        reject(
+                            new Error(
+                                "GM XHR aborted"
+                            )
+                        );
+                    }
+                };
+
+                gm(options);
+            }
+        );
+    }
+
+    // =========================================================
+    // Blob → Data URL
+    // =========================================================
+
+    function blobToDataURL(blob) {
+
+        return new Promise(
+            (resolve, reject) => {
+
+                const reader =
+                    new FileReader();
+
+                reader.onload =
+                    () => resolve(
+                        reader.result
+                    );
+
+                reader.onerror =
+                    () => reject(
+                        new Error(
+                            "FileReader 失敗"
+                        )
+                    );
+
+                reader.readAsDataURL(
+                    blob
+                );
+            }
+        );
+    }
+
+    // =========================================================
+    // 取得圖片
+    //
+    // 第一優先：GM.xmlHttpRequest
+    // 第二優先：普通 fetch
+    // =========================================================
 
     async function imageToBase64(img) {
 
@@ -72,208 +290,238 @@
             );
         }
 
-        const response =
-            await fetch(src, {
-                credentials: "include"
-            });
+        updateStatus(
+            "● 正在取得漫畫圖片"
+        );
 
-        if (!response.ok) {
-            throw new Error(
-                "圖片 HTTP " +
-                response.status
+        // -----------------------------------------------------
+        // 方法 1：GM.xmlHttpRequest
+        // -----------------------------------------------------
+
+        try {
+
+            const response =
+                await gmRequest({
+                    method: "GET",
+                    url: src,
+                    responseType: "blob",
+                    timeout: 20000
+                });
+
+            if (
+                response.status >= 200 &&
+                response.status < 300 &&
+                response.response
+            ) {
+
+                const blob =
+                    response.response;
+
+                if (
+                    blob instanceof Blob &&
+                    blob.size > 0
+                ) {
+
+                    return await blobToDataURL(
+                        blob
+                    );
+                }
+            }
+
+        } catch (error) {
+
+            console.warn(
+                "[Google Manga] GM圖片取得失敗：",
+                error
             );
         }
 
-        const blob =
-            await response.blob();
+        // -----------------------------------------------------
+        // 方法 2：普通 fetch
+        // -----------------------------------------------------
 
-        return await new Promise(
-            (resolve, reject) => {
+        try {
 
-                const reader =
-                    new FileReader();
+            const response =
+                await fetch(
+                    src,
+                    {
+                        credentials:
+                            "include"
+                    }
+                );
 
-                reader.onload = () =>
-                    resolve(reader.result);
-
-                reader.onerror = reject;
-
-                reader.readAsDataURL(blob);
+            if (!response.ok) {
+                throw new Error(
+                    `圖片 HTTP ${response.status}`
+                );
             }
-        );
+
+            const blob =
+                await response.blob();
+
+            if (!blob.size) {
+                throw new Error(
+                    "圖片內容為空"
+                );
+            }
+
+            return await blobToDataURL(
+                blob
+            );
+
+        } catch (error) {
+
+            throw new Error(
+                "無法取得漫畫圖片：" +
+                error.message
+            );
+        }
     }
 
-    // ==============================
-    // 建立翻譯框
-    // ==============================
+    // =========================================================
+    // 呼叫 Worker
+    // =========================================================
 
-    function createOverlay(
-        img,
-        block
+    async function callWorker(
+        imageData,
+        img
     ) {
 
-        const naturalWidth =
-            img.naturalWidth;
+        updateStatus(
+            "● 正在送往 Google Vision..."
+        );
 
-        const naturalHeight =
-            img.naturalHeight;
+        const payload = {
+            image_data:
+                imageData,
 
-        if (
-            !naturalWidth ||
-            !naturalHeight
-        ) {
-            return;
+            image_width:
+                img.naturalWidth,
+
+            image_height:
+                img.naturalHeight
+        };
+
+        // -----------------------------------------------------
+        // 優先使用普通 fetch
+        // Worker 已經設定 CORS
+        // -----------------------------------------------------
+
+        try {
+
+            const response =
+                await fetch(
+                    WORKER_URL,
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body:
+                            JSON.stringify(
+                                payload
+                            )
+                    }
+                );
+
+            const text =
+                await response.text();
+
+            let data;
+
+            try {
+                data =
+                    JSON.parse(text);
+            } catch {
+                throw new Error(
+                    "Worker 回傳非 JSON：" +
+                    text.slice(0, 300)
+                );
+            }
+
+            if (!response.ok) {
+
+                throw new Error(
+                    data.error ||
+                    `Worker HTTP ${response.status}`
+                );
+            }
+
+            return data;
+
+        } catch (fetchError) {
+
+            console.warn(
+                "[Google Manga] fetch Worker 失敗，嘗試 GM XHR",
+                fetchError
+            );
+
+            // -------------------------------------------------
+            // fallback：GM XHR
+            // -------------------------------------------------
+
+            const response =
+                await gmRequest({
+
+                    method: "POST",
+
+                    url: WORKER_URL,
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    data:
+                        JSON.stringify(
+                            payload
+                        ),
+
+                    responseType:
+                        "text",
+
+                    timeout: 60000
+                });
+
+            const text =
+                response.responseText ||
+                response.response ||
+                "";
+
+            let data;
+
+            try {
+                data =
+                    JSON.parse(text);
+            } catch {
+                throw new Error(
+                    "Worker 回傳非 JSON：" +
+                    text.slice(0, 300)
+                );
+            }
+
+            if (
+                response.status < 200 ||
+                response.status >= 300
+            ) {
+
+                throw new Error(
+                    data.error ||
+                    `Worker HTTP ${response.status}`
+                );
+            }
+
+            return data;
         }
-
-        const displayedWidth =
-            img.getBoundingClientRect().width;
-
-        const displayedHeight =
-            img.getBoundingClientRect().height;
-
-        if (
-            !displayedWidth ||
-            !displayedHeight
-        ) {
-            return;
-        }
-
-        const scaleX =
-            displayedWidth /
-            naturalWidth;
-
-        const scaleY =
-            displayedHeight /
-            naturalHeight;
-
-        // --------------------------
-        // 原始座標
-        // --------------------------
-
-        let x = block.x;
-        let y = block.y;
-
-        let width = block.width;
-        let height = block.height;
-
-        // --------------------------
-        // 擴大覆蓋範圍
-        // --------------------------
-
-        const expandX =
-            width * EXPAND_X;
-
-        const expandY =
-            height * EXPAND_Y;
-
-        x -= expandX;
-        y -= expandY;
-
-        width +=
-            expandX * 2;
-
-        height +=
-            expandY * 2;
-
-        // 不超出圖片
-        x = Math.max(
-            0,
-            x
-        );
-
-        y = Math.max(
-            0,
-            y
-        );
-
-        width =
-            Math.min(
-                width,
-                naturalWidth - x
-            );
-
-        height =
-            Math.min(
-                height,
-                naturalHeight - y
-            );
-
-        // --------------------------
-        // Overlay
-        // --------------------------
-
-        const overlay =
-            document.createElement(
-                "div"
-            );
-
-        overlay.className =
-            "google-manga-translation";
-
-        overlay.textContent =
-            block.translation;
-
-        // --------------------------
-        // 位置
-        // --------------------------
-
-        const rect =
-            img.getBoundingClientRect();
-
-        const left =
-            rect.left +
-            x * scaleX;
-
-        const top =
-            rect.top +
-            y * scaleY;
-
-        const cssWidth =
-            width * scaleX;
-
-        const cssHeight =
-            height * scaleY;
-
-        overlay.style.left =
-            `${left + window.scrollX}px`;
-
-        overlay.style.top =
-            `${top + window.scrollY}px`;
-
-        overlay.style.width =
-            `${cssWidth}px`;
-
-        overlay.style.minHeight =
-            `${cssHeight}px`;
-
-        // --------------------------
-        // 字體
-        // --------------------------
-
-        const baseFont =
-            Math.max(
-                14,
-                Math.min(
-                    28,
-                    cssHeight * 0.42
-                )
-            );
-
-        overlay.style.fontSize =
-            `${baseFont}px`;
-
-        // --------------------------
-        // 加到頁面
-        // --------------------------
-
-        document.body.appendChild(
-            overlay
-        );
     }
 
-    // ==============================
-    // 清除舊 Overlay
-    // ==============================
+    // =========================================================
+    // 清除指定圖片附近的舊 Overlay
+    // =========================================================
 
     function removeOldOverlays(img) {
 
@@ -282,12 +530,12 @@
                 ".google-manga-translation"
             );
 
+        const rect =
+            img.getBoundingClientRect();
+
         for (
             const overlay of overlays
         ) {
-
-            const rect =
-                img.getBoundingClientRect();
 
             const oRect =
                 overlay.getBoundingClientRect();
@@ -306,27 +554,208 @@
         }
     }
 
-    // ==============================
-    // 翻譯圖片
-    // ==============================
+    // =========================================================
+    // 建立翻譯框
+    // =========================================================
 
-    async function translateImage(
-        img
+    function createOverlay(
+        img,
+        block
     ) {
+
+        if (
+            !block ||
+            !block.translation
+        ) {
+            return;
+        }
+
+        const naturalWidth =
+            img.naturalWidth;
+
+        const naturalHeight =
+            img.naturalHeight;
+
+        if (
+            !naturalWidth ||
+            !naturalHeight
+        ) {
+            return;
+        }
+
+        const rect =
+            img.getBoundingClientRect();
+
+        if (
+            !rect.width ||
+            !rect.height
+        ) {
+            return;
+        }
+
+        let x =
+            Number(block.x) || 0;
+
+        let y =
+            Number(block.y) || 0;
+
+        let width =
+            Number(block.width) || 0;
+
+        let height =
+            Number(block.height) || 0;
+
+        if (
+            width <= 0 ||
+            height <= 0
+        ) {
+            return;
+        }
+
+        // -----------------------------------------------------
+        // 擴大覆蓋範圍
+        // -----------------------------------------------------
+
+        const expandX =
+            width * EXPAND_X;
+
+        const expandY =
+            height * EXPAND_Y;
+
+        x -= expandX;
+        y -= expandY;
+
+        width +=
+            expandX * 2;
+
+        height +=
+            expandY * 2;
+
+        x = Math.max(
+            0,
+            x
+        );
+
+        y = Math.max(
+            0,
+            y
+        );
+
+        width = Math.min(
+            width,
+            naturalWidth - x
+        );
+
+        height = Math.min(
+            height,
+            naturalHeight - y
+        );
+
+        const scaleX =
+            rect.width /
+            naturalWidth;
+
+        const scaleY =
+            rect.height /
+            naturalHeight;
+
+        const left =
+            rect.left +
+            x * scaleX;
+
+        const top =
+            rect.top +
+            y * scaleY;
+
+        const cssWidth =
+            width * scaleX;
+
+        const cssHeight =
+            height * scaleY;
+
+        // -----------------------------------------------------
+        // Overlay
+        // -----------------------------------------------------
+
+        const overlay =
+            document.createElement(
+                "div"
+            );
+
+        overlay.className =
+            "google-manga-translation";
+
+        overlay.textContent =
+            block.translation;
+
+        overlay.style.left =
+            `${left + window.scrollX}px`;
+
+        overlay.style.top =
+            `${top + window.scrollY}px`;
+
+        overlay.style.width =
+            `${cssWidth}px`;
+
+        overlay.style.minHeight =
+            `${cssHeight}px`;
+
+        // -----------------------------------------------------
+        // 字體
+        // -----------------------------------------------------
+
+        const fontSize =
+            Math.max(
+                13,
+                Math.min(
+                    28,
+                    cssHeight * 0.40
+                )
+            );
+
+        overlay.style.fontSize =
+            `${fontSize}px`;
+
+        // -----------------------------------------------------
+        // 多行
+        // -----------------------------------------------------
+
+        overlay.style.lineHeight =
+            "1.30";
+
+        overlay.style.padding =
+            `${Math.max(
+                5,
+                cssHeight * 0.08
+            )}px ${Math.max(
+                8,
+                cssWidth * 0.05
+            )}px`;
+
+        document.body.appendChild(
+            overlay
+        );
+    }
+
+    // =========================================================
+    // 翻譯單張圖片
+    // =========================================================
+
+    async function translateImage(img) {
 
         if (
             img.dataset[
                 PROCESSED_ATTR
-            ]
+            ] === "done"
         ) {
             return;
         }
 
         if (
             img.naturalWidth <
-            MIN_WIDTH ||
+                MIN_WIDTH ||
             img.naturalHeight <
-            MIN_HEIGHT
+                MIN_HEIGHT
         ) {
             return;
         }
@@ -335,25 +764,24 @@
             PROCESSED_ATTR
         ] = "processing";
 
+        stats.processing++;
+        updateStatus(
+            "● 開始處理圖片"
+        );
+
         try {
 
             const imageData =
-                await imageToBase64(img);
+                await imageToBase64(
+                    img
+                );
 
-            const payload = {
+            let data = null;
+            let lastError = null;
 
-                image_data:
-                    imageData,
-
-                image_width:
-                    img.naturalWidth,
-
-                image_height:
-                    img.naturalHeight
-            };
-
-            let lastError =
-                null;
+            // -------------------------------------------------
+            // Worker 重試
+            // -------------------------------------------------
 
             for (
                 let attempt = 0;
@@ -363,86 +791,99 @@
 
                 try {
 
-                    const response =
-                        await fetch(
-                            WORKER_URL,
-                            {
-                                method: "POST",
-
-                                headers: {
-                                    "Content-Type":
-                                        "application/json"
-                                },
-
-                                body:
-                                    JSON.stringify(
-                                        payload
-                                    )
-                            }
+                    data =
+                        await callWorker(
+                            imageData,
+                            img
                         );
 
-                    const data =
-                        await response.json();
-
-                    if (!response.ok) {
-
-                        throw new Error(
-                            data.error ||
-                            `Worker HTTP ${response.status}`
-                        );
-                    }
-
-                    // ----------------------
-                    // 清除舊翻譯
-                    // ----------------------
-
-                    removeOldOverlays(img);
-
-                    // ----------------------
-                    // 顯示翻譯
-                    // ----------------------
-
-                    const blocks =
-                        data.text_blocks || [];
-
-                    for (
-                        const block of blocks
-                    ) {
-
-                        if (
-                            !block.translation
-                        ) {
-                            continue;
-                        }
-
-                        createOverlay(
-                            img,
-                            block
-                        );
-                    }
-
-                    img.dataset[
-                        PROCESSED_ATTR
-                    ] = "done";
-
-                    return;
+                    break;
 
                 } catch (error) {
 
                     lastError =
                         error;
 
-                    await sleep(
-                        500 *
-                        (attempt + 1)
+                    console.error(
+                        "[Google Manga] Worker:",
+                        error
                     );
+
+                    if (
+                        attempt <
+                        MAX_RETRIES
+                    ) {
+
+                        updateStatus(
+                            `● 翻譯失敗，重試 ${
+                                attempt + 1
+                            }/${MAX_RETRIES}`
+                        );
+
+                        await sleep(
+                            1000 *
+                            (attempt + 1)
+                        );
+                    }
                 }
             }
 
-            throw lastError ||
-                new Error(
-                    "翻譯失敗"
+            if (!data) {
+                throw (
+                    lastError ||
+                    new Error(
+                        "Worker 沒有回應"
+                    )
                 );
+            }
+
+            const blocks =
+                Array.isArray(
+                    data.text_blocks
+                )
+                    ? data.text_blocks
+                    : [];
+
+            stats.ocrBlocks +=
+                blocks.length;
+
+            updateStatus(
+                `● Google OCR 找到 ${blocks.length} 個文字區域`
+            );
+
+            removeOldOverlays(
+                img
+            );
+
+            // -------------------------------------------------
+            // 顯示翻譯
+            // -------------------------------------------------
+
+            for (
+                const block of blocks
+            ) {
+
+                if (
+                    !block.translation
+                ) {
+                    continue;
+                }
+
+                createOverlay(
+                    img,
+                    block
+                );
+            }
+
+            img.dataset[
+                PROCESSED_ATTR
+            ] = "done";
+
+            stats.success++;
+
+            updateStatus(
+                `✓ 完成：${blocks.length} 個文字區域`
+            );
 
         } catch (error) {
 
@@ -455,17 +896,32 @@
                 PROCESSED_ATTR
             ] = "error";
 
+            stats.failed++;
+
+            updateStatus(
+                "❌ " +
+                error.message
+            );
+
         } finally {
 
+            stats.processing =
+                Math.max(
+                    0,
+                    stats.processing - 1
+                );
+
             running--;
+
+            updateStatus();
 
             processQueue();
         }
     }
 
-    // ==============================
+    // =========================================================
     // Queue
-    // ==============================
+    // =========================================================
 
     function enqueue(img) {
 
@@ -480,6 +936,8 @@
 
         queue.push(img);
 
+        stats.queued++;
+
         processQueue();
     }
 
@@ -488,7 +946,7 @@
         while (
             running <
                 MAX_CONCURRENT &&
-            queue.length
+            queue.length > 0
         ) {
 
             const img =
@@ -506,9 +964,9 @@
         }
     }
 
-    // ==============================
-    // 找漫畫圖片
-    // ==============================
+    // =========================================================
+    // 掃描圖片
+    // =========================================================
 
     function scanImages() {
 
@@ -517,11 +975,11 @@
                 "img"
             );
 
-        const viewportTop =
+        const top =
             window.scrollY -
             ROOT_MARGIN;
 
-        const viewportBottom =
+        const bottom =
             window.scrollY +
             window.innerHeight +
             ROOT_MARGIN;
@@ -530,13 +988,14 @@
             const img of images
         ) {
 
+            const status =
+                img.dataset[
+                    PROCESSED_ATTR
+                ];
+
             if (
-                img.dataset[
-                    PROCESSED_ATTR
-                ] === "done" ||
-                img.dataset[
-                    PROCESSED_ATTR
-                ] === "processing"
+                status === "done" ||
+                status === "processing"
             ) {
                 continue;
             }
@@ -549,9 +1008,9 @@
 
             if (
                 img.naturalWidth <
-                MIN_WIDTH ||
+                    MIN_WIDTH ||
                 img.naturalHeight <
-                MIN_HEIGHT
+                    MIN_HEIGHT
             ) {
                 continue;
             }
@@ -559,28 +1018,34 @@
             const rect =
                 img.getBoundingClientRect();
 
-            const top =
+            const imageTop =
                 rect.top +
                 window.scrollY;
 
-            const bottom =
+            const imageBottom =
                 rect.bottom +
                 window.scrollY;
 
             if (
-                bottom < viewportTop ||
-                top > viewportBottom
+                imageBottom < top ||
+                imageTop > bottom
             ) {
                 continue;
             }
 
+            stats.found++;
+
             enqueue(img);
         }
+
+        updateStatus(
+            `● 找到 ${stats.found} 張漫畫圖片`
+        );
     }
 
-    // ==============================
-    // Overlay CSS
-    // ==============================
+    // =========================================================
+    // CSS
+    // =========================================================
 
     const style =
         document.createElement(
@@ -593,7 +1058,7 @@
 
             position: absolute;
 
-            z-index: 2147483647;
+            z-index: 2147483646;
 
             box-sizing: border-box;
 
@@ -603,24 +1068,22 @@
 
             justify-content: center;
 
-            padding: 8px 12px;
-
             background:
-                rgba(255,255,255,0.96);
+                rgba(255,255,255,.96);
 
             color:
                 #111;
 
             border-radius:
-                8px;
+                7px;
 
             border:
                 1px solid
-                rgba(0,0,0,0.12);
+                rgba(0,0,0,.10);
 
             box-shadow:
-                0 1px 4px
-                rgba(0,0,0,0.20);
+                0 2px 7px
+                rgba(0,0,0,.20);
 
             font-family:
                 -apple-system,
@@ -632,23 +1095,30 @@
             font-weight:
                 600;
 
-            line-height:
-                1.35;
-
             text-align:
                 center;
 
             white-space:
                 pre-wrap;
 
+            word-break:
+                break-word;
+
             overflow:
                 hidden;
+
+            line-height:
+                1.30;
 
             pointer-events:
                 none;
 
-            word-break:
-                break-word;
+        }
+
+        #google-manga-status {
+
+            user-select:
+                none;
 
         }
 
@@ -658,43 +1128,50 @@
         style
     );
 
-    // ==============================
-    // 初次掃描
-    // ==============================
+    // =========================================================
+    // 啟動
+    // =========================================================
+
+    createStatusPanel();
+
+    updateStatus(
+        "✓ Userscript 已啟動"
+    );
 
     setTimeout(
         scanImages,
-        1000
+        1200
     );
 
-    // ==============================
+    // =========================================================
     // 滾動
-    // ==============================
+    // =========================================================
 
-    let scrollTimer = null;
+    let scanTimer = null;
 
     window.addEventListener(
         "scroll",
         () => {
 
             clearTimeout(
-                scrollTimer
+                scanTimer
             );
 
-            scrollTimer =
+            scanTimer =
                 setTimeout(
                     scanImages,
-                    DELAY
+                    SCAN_DELAY
                 );
+
         },
         {
             passive: true
         }
     );
 
-    // ==============================
-    // 新圖片
-    // ==============================
+    // =========================================================
+    // 動態載入圖片
+    // =========================================================
 
     const observer =
         new MutationObserver(
@@ -707,17 +1184,20 @@
                 window.__googleMangaScanTimer =
                     setTimeout(
                         scanImages,
-                        300
+                        500
                     );
             }
         );
 
-    observer.observe(
-        document.body,
-        {
-            childList: true,
-            subtree: true
-        }
-    );
+    if (document.body) {
+
+        observer.observe(
+            document.body,
+            {
+                childList: true,
+                subtree: true
+            }
+        );
+    }
 
 })();
