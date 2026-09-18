@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         AI 圖片自動翻譯 V7.1 - Google Vision
+// @name         AI 圖片自動翻譯 V7.2 - Google Vision
 // @namespace    manga-translator
-// @version      7.1.0
+// @version      7.2.0
 // @description  Google Vision OCR + Google Translation 漫畫自動翻譯
 // @match        *://*/*
 // @grant        GM.xmlHttpRequest
@@ -13,74 +13,46 @@
 (() => {
     "use strict";
 
-    // =========================================================
-    // 設定
-    // =========================================================
-
     const WORKER_URL =
         "https://safari-image-translator.cgl20050126.workers.dev";
 
-    // 最小漫畫圖片尺寸
     const MIN_WIDTH = 150;
     const MIN_HEIGHT = 80;
 
-    // 一次只處理一張
-    const MAX_CONCURRENT = 1;
-
-    // 圖片之間稍微間隔
-    const DELAY = 300;
-
-    // 視窗上下各多掃描多少 px
     const ROOT_MARGIN = 1200;
 
-    // 失敗重試
     const MAX_RETRIES = 2;
 
-    // 翻譯框額外擴大
+    // 擴大翻譯覆蓋區域
     const EXPAND_X = 0.22;
     const EXPAND_Y = 0.28;
 
-    // 本版本專用標記
-    const PROCESSED_ATTR =
-        "data-google-manga-v71";
-
-    // =========================================================
-    // 狀態
-    // =========================================================
+    const ATTR =
+        "data-google-manga-v72";
 
     const state = {
         found: 0,
         processing: 0,
         done: 0,
         failed: 0,
-        lastError: "",
-        started: false
+        lastError: ""
     };
-
-    const queue = [];
-
-    const queued =
-        new WeakSet();
-
-    let running = 0;
-
-    // =========================================================
-    // 狀態面板
-    // =========================================================
 
     let panel = null;
 
+    // =====================================================
+    // 狀態面板
+    // =====================================================
+
     function createPanel() {
 
-        if (panel) {
-            return;
-        }
+        if (panel) return;
 
         panel =
             document.createElement("div");
 
         panel.id =
-            "google-manga-translator-panel";
+            "google-manga-v72-panel";
 
         panel.innerHTML = `
             <div class="gmt-title">
@@ -89,37 +61,19 @@
 
             <div class="gmt-status">
                 <span class="gmt-dot"></span>
-                <span id="gmt-status-text">
-                    初始化
+                <span id="gmt-status">
+                    啟動中
                 </span>
             </div>
 
             <div class="gmt-counts">
-                <span>
-                    圖片：
-                    <b id="gmt-found">0</b>
-                </span>
-
-                <span>
-                    處理：
-                    <b id="gmt-processing">0</b>
-                </span>
-
-                <span>
-                    完成：
-                    <b id="gmt-done">0</b>
-                </span>
-
-                <span>
-                    失敗：
-                    <b id="gmt-failed">0</b>
-                </span>
+                <div>圖片：<b id="gmt-found">0</b></div>
+                <div>處理：<b id="gmt-processing">0</b></div>
+                <div>完成：<b id="gmt-done">0</b></div>
+                <div>失敗：<b id="gmt-failed">0</b></div>
             </div>
 
-            <div
-                id="gmt-error"
-                class="gmt-error"
-            ></div>
+            <div id="gmt-error"></div>
         `;
 
         document.body.appendChild(panel);
@@ -129,139 +83,86 @@
 
     function updatePanel() {
 
-        if (!panel) {
-            return;
-        }
+        if (!panel) return;
 
-        const found =
-            panel.querySelector(
-                "#gmt-found"
-            );
+        panel.querySelector(
+            "#gmt-found"
+        ).textContent =
+            state.found;
 
-        const processing =
-            panel.querySelector(
-                "#gmt-processing"
-            );
+        panel.querySelector(
+            "#gmt-processing"
+        ).textContent =
+            state.processing;
 
-        const done =
-            panel.querySelector(
-                "#gmt-done"
-            );
+        panel.querySelector(
+            "#gmt-done"
+        ).textContent =
+            state.done;
 
-        const failed =
-            panel.querySelector(
-                "#gmt-failed"
-            );
+        panel.querySelector(
+            "#gmt-failed"
+        ).textContent =
+            state.failed;
 
         const status =
             panel.querySelector(
-                "#gmt-status-text"
+                "#gmt-status"
             );
 
-        const error =
-            panel.querySelector(
-                "#gmt-error"
-            );
+        if (state.processing > 0) {
 
-        if (found) {
-            found.textContent =
-                state.found;
+            status.textContent =
+                "正在翻譯";
+
+        } else if (state.failed > 0) {
+
+            status.textContent =
+                "部分失敗";
+
+        } else if (state.done > 0) {
+
+            status.textContent =
+                "完成";
+
+        } else {
+
+            status.textContent =
+                "等待圖片";
         }
 
-        if (processing) {
-            processing.textContent =
-                state.processing;
-        }
-
-        if (done) {
-            done.textContent =
-                state.done;
-        }
-
-        if (failed) {
-            failed.textContent =
-                state.failed;
-        }
-
-        if (status) {
-
-            if (state.processing > 0) {
-
-                status.textContent =
-                    "正在翻譯";
-
-            } else if (
-                queue.length > 0
-            ) {
-
-                status.textContent =
-                    "等待處理";
-
-            } else if (
-                state.done > 0 &&
-                state.failed === 0
-            ) {
-
-                status.textContent =
-                    "完成";
-
-            } else if (
-                state.failed > 0
-            ) {
-
-                status.textContent =
-                    "部分失敗";
-
-            } else {
-
-                status.textContent =
-                    "等待圖片";
-            }
-        }
-
-        if (error) {
-
-            if (state.lastError) {
-
-                error.textContent =
-                    state.lastError;
-
-            } else {
-
-                error.textContent =
-                    "";
-            }
-        }
+        panel.querySelector(
+            "#gmt-error"
+        ).textContent =
+            state.lastError || "";
     }
 
-    // =========================================================
+    // =====================================================
     // CSS
-    // =========================================================
+    // =====================================================
 
     const style =
         document.createElement("style");
 
     style.textContent = `
 
-        #google-manga-translator-panel {
+        #google-manga-v72-panel {
 
             position: fixed;
 
-            top: 14px;
-            right: 14px;
+            top: 12px;
+            right: 12px;
 
             z-index: 2147483647;
 
-            min-width: 280px;
+            min-width: 270px;
 
-            max-width: 90vw;
+            padding: 14px 16px;
 
-            padding: 16px 18px;
-
-            border-radius: 18px;
+            border-radius: 16px;
 
             background:
-                rgba(25,25,25,0.94);
+                rgba(25,25,25,.95);
 
             color: white;
 
@@ -269,99 +170,72 @@
                 -apple-system,
                 BlinkMacSystemFont,
                 "Noto Sans TC",
-                "Microsoft JhengHei",
                 sans-serif;
 
             box-shadow:
                 0 8px 30px
-                rgba(0,0,0,0.35);
-
-            backdrop-filter:
-                blur(12px);
-
-            -webkit-backdrop-filter:
-                blur(12px);
+                rgba(0,0,0,.35);
 
             pointer-events:
                 none;
-
         }
 
-        #google-manga-translator-panel
         .gmt-title {
 
-            font-size: 20px;
+            font-size: 19px;
 
-            font-weight: 600;
+            font-weight: 700;
 
-            margin-bottom: 8px;
-
+            margin-bottom: 7px;
         }
 
-        #google-manga-translator-panel
         .gmt-status {
 
             display: flex;
 
             align-items: center;
 
-            gap: 8px;
+            gap: 7px;
 
-            font-size: 16px;
-
-            margin-bottom: 10px;
-
+            margin-bottom: 9px;
         }
 
-        #google-manga-translator-panel
         .gmt-dot {
 
-            width: 12px;
-
-            height: 12px;
+            width: 10px;
+            height: 10px;
 
             border-radius: 50%;
 
-            background:
-                #36d26f;
-
-            display: inline-block;
+            background: #35d26f;
 
             animation:
                 gmt-pulse 1.2s infinite;
-
         }
 
-        #google-manga-translator-panel
         .gmt-counts {
 
             display: grid;
 
             grid-template-columns:
-                repeat(2, 1fr);
+                1fr 1fr;
 
-            gap: 5px 14px;
+            gap: 4px 15px;
 
-            font-size: 15px;
-
+            font-size: 14px;
         }
 
-        #google-manga-translator-panel
-        .gmt-error {
+        #gmt-error {
 
             margin-top: 8px;
 
-            max-width: 360px;
+            font-size: 11px;
 
-            font-size: 12px;
-
-            line-height: 1.35;
-
-            color:
-                #ff7777;
+            line-height: 1.3;
 
             word-break: break-word;
 
+            color: #ff7777;
         }
 
         @keyframes gmt-pulse {
@@ -371,16 +245,15 @@
             }
 
             50% {
-                opacity: 0.35;
+                opacity: .35;
             }
 
             100% {
                 opacity: 1;
             }
-
         }
 
-        .google-manga-translation-v71 {
+        .google-manga-v72-overlay {
 
             position: absolute;
 
@@ -397,7 +270,7 @@
             padding: 8px 12px;
 
             background:
-                rgba(255,255,255,0.97);
+                rgba(255,255,255,.97);
 
             color:
                 #111;
@@ -407,11 +280,11 @@
 
             border:
                 1px solid
-                rgba(0,0,0,0.12);
+                rgba(0,0,0,.12);
 
             box-shadow:
                 0 1px 5px
-                rgba(0,0,0,0.20);
+                rgba(0,0,0,.20);
 
             font-family:
                 -apple-system,
@@ -420,47 +293,27 @@
                 "Microsoft JhengHei",
                 sans-serif;
 
-            font-weight:
-                600;
+            font-weight: 600;
 
-            line-height:
-                1.35;
+            line-height: 1.35;
 
-            text-align:
-                center;
+            text-align: center;
 
-            white-space:
-                pre-wrap;
+            white-space: pre-wrap;
 
-            overflow:
-                hidden;
+            word-break: break-word;
 
-            pointer-events:
-                none;
+            overflow: hidden;
 
-            word-break:
-                break-word;
-
+            pointer-events: none;
         }
     `;
 
     document.head.appendChild(style);
 
-    // =========================================================
-    // 工具
-    // =========================================================
-
-    function sleep(ms) {
-
-        return new Promise(
-            resolve =>
-                setTimeout(resolve, ms)
-        );
-    }
-
-    // =========================================================
-    // GM.xmlHttpRequest
-    // =========================================================
+    // =====================================================
+    // GM Request
+    // =====================================================
 
     function gmRequest(options) {
 
@@ -469,57 +322,29 @@
             typeof GM.xmlHttpRequest ===
                 "function"
         ) {
-
             return GM.xmlHttpRequest(
                 options
             );
         }
 
-        if (
-            typeof GM_xmlhttpRequest ===
-                "function"
-        ) {
-
-            return new Promise(
-                (resolve, reject) => {
-
-                    GM_xmlhttpRequest({
-
-                        ...options,
-
-                        onload:
-                            resolve,
-
-                        onerror:
-                            reject,
-
-                        ontimeout:
-                            reject
-                    });
-
-                }
-            );
-        }
-
         return Promise.reject(
             new Error(
-                "Userscripts 不支援 GM.xmlHttpRequest"
+                "GM.xmlHttpRequest 不存在"
             )
         );
     }
 
-    // =========================================================
-    // 取得漫畫圖片
-    // =========================================================
+    // =====================================================
+    // 下載圖片
+    // =====================================================
 
-    async function getImageBlob(img) {
+    async function downloadImage(img) {
 
         const src =
             img.currentSrc ||
             img.src;
 
         if (!src) {
-
             throw new Error(
                 "圖片沒有 URL"
             );
@@ -544,7 +369,7 @@
         ) {
 
             throw new Error(
-                "圖片下載 HTTP " +
+                "圖片下載失敗 HTTP " +
                 (
                     response?.status ||
                     0
@@ -555,16 +380,16 @@
         if (!response.response) {
 
             throw new Error(
-                "沒有取得圖片資料"
+                "沒有取得圖片 Blob"
             );
         }
 
         return response.response;
     }
 
-    // =========================================================
+    // =====================================================
     // Blob → Base64
-    // =========================================================
+    // =====================================================
 
     function blobToDataURL(blob) {
 
@@ -574,37 +399,35 @@
                 const reader =
                     new FileReader();
 
-                reader.onload =
-                    () => {
+                reader.onload = () => {
 
-                        if (
-                            typeof reader.result !==
-                                "string"
-                        ) {
-
-                            reject(
-                                new Error(
-                                    "Base64 轉換失敗"
-                                )
-                            );
-
-                            return;
-                        }
-
-                        resolve(
-                            reader.result
-                        );
-                    };
-
-                reader.onerror =
-                    () => {
+                    if (
+                        typeof reader.result !==
+                            "string"
+                    ) {
 
                         reject(
                             new Error(
-                                "FileReader 失敗"
+                                "Base64 轉換失敗"
                             )
                         );
-                    };
+
+                        return;
+                    }
+
+                    resolve(
+                        reader.result
+                    );
+                };
+
+                reader.onerror = () => {
+
+                    reject(
+                        new Error(
+                            "FileReader 失敗"
+                        )
+                    );
+                };
 
                 reader.readAsDataURL(
                     blob
@@ -613,11 +436,11 @@
         );
     }
 
-    // =========================================================
-    // POST Worker
-    // =========================================================
+    // =====================================================
+    // 傳送 Worker
+    // =====================================================
 
-    async function sendToWorker(
+    async function callWorker(
         imageData,
         width,
         height
@@ -648,7 +471,6 @@
 
                     "Content-Type":
                         "application/json"
-
                 },
 
                 data: body,
@@ -668,20 +490,12 @@
 
             try {
 
-                if (
+                detail =
                     response?.response
-                ) {
-
-                    detail =
-                        typeof response.response ===
-                            "string"
-
-                            ? response.response
-
-                            : JSON.stringify(
-                                response.response
-                            );
-                }
+                        ? JSON.stringify(
+                            response.response
+                        )
+                        : "";
 
             } catch (_) {}
 
@@ -693,7 +507,7 @@
                 ) +
                 (
                     detail
-                        ? " - " + detail
+                        ? " " + detail
                         : ""
                 )
             );
@@ -727,52 +541,16 @@
 
             throw new Error(
                 data?.error ||
-                "Worker 沒有正常回應"
+                "Worker 發生未知錯誤"
             );
         }
 
         return data;
     }
 
-    // =========================================================
-    // 清除圖片附近舊翻譯
-    // =========================================================
-
-    function removeOldOverlays(img) {
-
-        const overlays =
-            document.querySelectorAll(
-                ".google-manga-translation-v71"
-            );
-
-        const rect =
-            img.getBoundingClientRect();
-
-        for (
-            const overlay of overlays
-        ) {
-
-            const oRect =
-                overlay.getBoundingClientRect();
-
-            const overlap =
-                !(
-                    oRect.right < rect.left ||
-                    oRect.left > rect.right ||
-                    oRect.bottom < rect.top ||
-                    oRect.top > rect.bottom
-                );
-
-            if (overlap) {
-
-                overlay.remove();
-            }
-        }
-    }
-
-    // =========================================================
+    // =====================================================
     // 建立翻譯框
-    // =========================================================
+    // =====================================================
 
     function createOverlay(
         img,
@@ -783,7 +561,6 @@
             !block ||
             !block.translation
         ) {
-
             return;
         }
 
@@ -793,22 +570,15 @@
         const naturalHeight =
             img.naturalHeight;
 
-        if (
-            !naturalWidth ||
-            !naturalHeight
-        ) {
-
-            return;
-        }
-
         const rect =
             img.getBoundingClientRect();
 
         if (
+            !naturalWidth ||
+            !naturalHeight ||
             !rect.width ||
             !rect.height
         ) {
-
             return;
         }
 
@@ -828,21 +598,15 @@
             width <= 0 ||
             height <= 0
         ) {
-
             return;
         }
 
-        // -------------------------
-        // 擴大覆蓋區域
-        // -------------------------
-
+        // 擴大覆蓋範圍
         const extraX =
-            width *
-            EXPAND_X;
+            width * EXPAND_X;
 
         const extraY =
-            height *
-            EXPAND_Y;
+            height * EXPAND_Y;
 
         x -= extraX;
         y -= extraY;
@@ -853,10 +617,7 @@
         height +=
             extraY * 2;
 
-        // -------------------------
-        // 限制在圖片範圍
-        // -------------------------
-
+        // 限制在圖片內
         x =
             Math.max(
                 0,
@@ -881,10 +642,6 @@
                 naturalHeight - y
             );
 
-        // -------------------------
-        // 尺寸比例
-        // -------------------------
-
         const scaleX =
             rect.width /
             naturalWidth;
@@ -893,63 +650,49 @@
             rect.height /
             naturalHeight;
 
-        const left =
-            rect.left +
-            x * scaleX;
-
-        const top =
-            rect.top +
-            y * scaleY;
-
-        const cssWidth =
-            width * scaleX;
-
-        const cssHeight =
-            height * scaleY;
-
-        // -------------------------
-        // 建立元素
-        // -------------------------
-
         const overlay =
             document.createElement(
                 "div"
             );
 
         overlay.className =
-            "google-manga-translation-v71";
+            "google-manga-v72-overlay";
 
         overlay.textContent =
             block.translation;
 
         overlay.style.left =
             (
-                left +
+                rect.left +
+                x * scaleX +
                 window.scrollX
             ) + "px";
 
         overlay.style.top =
             (
-                top +
+                rect.top +
+                y * scaleY +
                 window.scrollY
             ) + "px";
 
         overlay.style.width =
-            cssWidth + "px";
+            (
+                width * scaleX
+            ) + "px";
 
         overlay.style.minHeight =
-            cssHeight + "px";
-
-        // -------------------------
-        // 字體
-        // -------------------------
+            (
+                height * scaleY
+            ) + "px";
 
         const fontSize =
             Math.max(
                 13,
                 Math.min(
                     30,
-                    cssHeight * 0.40
+                    height *
+                    scaleY *
+                    0.40
                 )
             );
 
@@ -961,45 +704,41 @@
         );
     }
 
-    // =========================================================
-    // 翻譯一張圖片
-    // =========================================================
+    // =====================================================
+    // 翻譯單張圖片
+    // =====================================================
 
-    async function translateImage(
-        img
-    ) {
+    async function translateOne(img) {
 
-        img.dataset[
-            PROCESSED_ATTR
-        ] = "processing";
+        if (
+            img.dataset[ATTR] ===
+            "done"
+        ) {
+            return;
+        }
+
+        img.dataset[ATTR] =
+            "processing";
 
         state.processing++;
+
         updatePanel();
 
         try {
 
-            // -------------------------
-            // 下載圖片
-            // -------------------------
-
+            // 1. 下載圖片
             const blob =
-                await getImageBlob(
+                await downloadImage(
                     img
                 );
 
-            // -------------------------
-            // Base64
-            // -------------------------
-
+            // 2. Base64
             const imageData =
                 await blobToDataURL(
                     blob
                 );
 
-            // -------------------------
-            // Worker
-            // -------------------------
-
+            // 3. Worker
             let data = null;
 
             let lastError = null;
@@ -1013,7 +752,7 @@
                 try {
 
                     data =
-                        await sendToWorker(
+                        await callWorker(
                             imageData,
                             img.naturalWidth,
                             img.naturalHeight
@@ -1032,7 +771,7 @@
                     ) {
 
                         await sleep(
-                            800 *
+                            1000 *
                             (attempt + 1)
                         );
                     }
@@ -1049,18 +788,7 @@
                 );
             }
 
-            // -------------------------
-            // 清除舊框
-            // -------------------------
-
-            removeOldOverlays(
-                img
-            );
-
-            // -------------------------
-            // 顯示翻譯
-            // -------------------------
-
+            // 4. 顯示結果
             const blocks =
                 Array.isArray(
                     data.text_blocks
@@ -1078,17 +806,15 @@
                 );
             }
 
-            img.dataset[
-                PROCESSED_ATTR
-            ] = "done";
+            img.dataset[ATTR] =
+                "done";
 
             state.done++;
 
         } catch (error) {
 
-            img.dataset[
-                PROCESSED_ATTR
-            ] = "failed";
+            img.dataset[ATTR] =
+                "failed";
 
             state.failed++;
 
@@ -1099,7 +825,7 @@
                 );
 
             console.error(
-                "[Google Manga Translator V7.1]",
+                "[Google Manga V7.2]",
                 error
             );
 
@@ -1107,89 +833,30 @@
 
             state.processing--;
 
-            running--;
-
             updatePanel();
-
-            await sleep(DELAY);
-
-            processQueue();
         }
     }
 
-    // =========================================================
-    // Queue
-    // =========================================================
+    // =====================================================
+    // 等待
+    // =====================================================
 
-    function enqueue(img) {
+    function sleep(ms) {
 
-        if (!img) {
-            return;
-        }
-
-        if (
-            queued.has(img)
-        ) {
-
-            return;
-        }
-
-        if (
-            img.dataset[
-                PROCESSED_ATTR
-            ] === "done" ||
-            img.dataset[
-                PROCESSED_ATTR
-            ] === "processing"
-        ) {
-
-            return;
-        }
-
-        queued.add(img);
-
-        queue.push(img);
-
-        processQueue();
-    }
-
-    function processQueue() {
-
-        if (
-            running >=
-            MAX_CONCURRENT
-        ) {
-
-            updatePanel();
-
-            return;
-        }
-
-        const img =
-            queue.shift();
-
-        if (!img) {
-
-            updatePanel();
-
-            return;
-        }
-
-        running++;
-
-        updatePanel();
-
-        // 不 await，避免阻塞 Queue
-        translateImage(
-            img
+        return new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    ms
+                )
         );
     }
 
-    // =========================================================
-    // 掃描圖片
-    // =========================================================
+    // =====================================================
+    // 找圖片
+    // =====================================================
 
-    function scanImages() {
+    function getImages() {
 
         const images =
             Array.from(
@@ -1198,113 +865,181 @@
                 )
             );
 
-        let count = 0;
-
-        const viewportTop =
+        const top =
             window.scrollY -
             ROOT_MARGIN;
 
-        const viewportBottom =
+        const bottom =
             window.scrollY +
             window.innerHeight +
             ROOT_MARGIN;
 
-        for (
-            const img of images
-        ) {
+        return images.filter(
+            img => {
 
-            if (
-                !img ||
-                !img.complete
-            ) {
+                if (
+                    !img.complete
+                ) {
+                    return false;
+                }
 
-                continue;
+                if (
+                    img.dataset[ATTR] ===
+                    "done" ||
+                    img.dataset[ATTR] ===
+                    "processing"
+                ) {
+                    return false;
+                }
+
+                if (
+                    img.naturalWidth <
+                    MIN_WIDTH ||
+                    img.naturalHeight <
+                    MIN_HEIGHT
+                ) {
+                    return false;
+                }
+
+                const rect =
+                    img.getBoundingClientRect();
+
+                const imageTop =
+                    rect.top +
+                    window.scrollY;
+
+                const imageBottom =
+                    rect.bottom +
+                    window.scrollY;
+
+                if (
+                    imageBottom <
+                    top ||
+                    imageTop >
+                    bottom
+                ) {
+                    return false;
+                }
+
+                return true;
             }
-
-            if (
-                img.naturalWidth <
-                MIN_WIDTH ||
-                img.naturalHeight <
-                MIN_HEIGHT
-            ) {
-
-                continue;
-            }
-
-            const rect =
-                img.getBoundingClientRect();
-
-            const top =
-                rect.top +
-                window.scrollY;
-
-            const bottom =
-                rect.bottom +
-                window.scrollY;
-
-            if (
-                bottom <
-                viewportTop ||
-                top >
-                viewportBottom
-            ) {
-
-                continue;
-            }
-
-            count++;
-
-            enqueue(img);
-        }
-
-        state.found =
-            count;
-
-        updatePanel();
+        );
     }
 
-    // =========================================================
-    // MutationObserver
-    // =========================================================
+    // =====================================================
+    // 一張一張處理
+    // =====================================================
 
-    let scanTimer = null;
+    let scanning = false;
+
+    async function scanAndTranslate() {
+
+        if (scanning) {
+            return;
+        }
+
+        scanning = true;
+
+        try {
+
+            const images =
+                getImages();
+
+            state.found =
+                images.length;
+
+            updatePanel();
+
+            console.log(
+                "[Google Manga V7.2] 找到圖片：",
+                images.length
+            );
+
+            for (
+                const img of images
+            ) {
+
+                await translateOne(
+                    img
+                );
+
+                await sleep(
+                    300
+                );
+            }
+
+        } finally {
+
+            scanning = false;
+
+            updatePanel();
+        }
+    }
+
+    // =====================================================
+    // MutationObserver
+    // =====================================================
+
+    let mutationTimer = null;
 
     const observer =
         new MutationObserver(
             () => {
 
                 clearTimeout(
-                    scanTimer
+                    mutationTimer
                 );
 
-                scanTimer =
+                mutationTimer =
                     setTimeout(
-                        scanImages,
-                        500
+                        () => {
+
+                            scanAndTranslate();
+
+                        },
+                        800
                     );
             }
         );
 
-    // =========================================================
+    // =====================================================
+    // 滾動
+    // =====================================================
+
+    let scrollTimer = null;
+
+    window.addEventListener(
+        "scroll",
+        () => {
+
+            clearTimeout(
+                scrollTimer
+            );
+
+            scrollTimer =
+                setTimeout(
+                    () => {
+
+                        scanAndTranslate();
+
+                    },
+                    500
+                );
+
+        },
+        {
+            passive: true
+        }
+    );
+
+    // =====================================================
     // 啟動
-    // =========================================================
+    // =====================================================
 
     function start() {
 
         createPanel();
 
-        state.started =
-            true;
-
-        updatePanel();
-
-        // 初次掃描
-        setTimeout(
-            scanImages,
-            800
-        );
-
-        // 監控新增漫畫圖片
         observer.observe(
             document.body,
             {
@@ -1313,50 +1048,13 @@
             }
         );
 
-        // 捲動後繼續掃描
-        let scrollTimer = null;
-
-        window.addEventListener(
-            "scroll",
-            () => {
-
-                clearTimeout(
-                    scrollTimer
-                );
-
-                scrollTimer =
-                    setTimeout(
-                        scanImages,
-                        400
-                    );
-
-            },
-            {
-                passive: true
-            }
-        );
-
-        // 窗口大小改變後重新掃描
-        window.addEventListener(
-            "resize",
-            () => {
-
-                clearTimeout(
-                    scrollTimer
-                );
-
-                scrollTimer =
-                    setTimeout(
-                        scanImages,
-                        400
-                    );
-            }
+        setTimeout(
+            scanAndTranslate,
+            1000
         );
     }
 
-    if (
-        document.body
-    ) {
+    if (document.body) {
 
         start();
 
