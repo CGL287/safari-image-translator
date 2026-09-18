@@ -5,7 +5,7 @@
 // @description  Safari 自動 OCR 圖片並翻譯成繁體中文
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
-// @connect      YOUR-WORKER.workers.dev
+// @connect      safari-image-translator.cgl20050126.workers.dev
 // @run-at       document-end
 // ==/UserScript==
 
@@ -26,7 +26,7 @@
      */
 
     const WORKER_URL =
-        'https://YOUR-WORKER.workers.dev';
+        'https://safari-image-translator.cgl20050126.workers.dev';
 
 
     /*
